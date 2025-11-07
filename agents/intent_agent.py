@@ -4,11 +4,9 @@ from langchain_ollama import ChatOllama
 from prompts.intent_prompt import intent_prompt
 
 
-# Define the state structure properly
 class IntentState(TypedDict):
     user_input: str
     intent: str | None
-
 
 llm = ChatOllama(model="gpt-oss:latest", temperature=0)
 
