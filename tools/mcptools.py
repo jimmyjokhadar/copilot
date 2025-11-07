@@ -119,6 +119,13 @@ Reference Number: {txn.get('referenceNumber', 'N/A')}
         transaction_details.append(detail)
     return "\n".join(transaction_details)
 
+list_transactions_date_range_tool = StructuredTool.from_function(
+    func=list_transactions_date_range,
+    name="list_transactions_date_range",
+    description="Lists transactions made with the user's card within a specified date range.",
+    args_schema=ListTransactionsDateRangeInput
+)
+
 if __name__ == "__main__":
     USER_DATA = {
         "_id": {
