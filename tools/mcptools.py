@@ -179,6 +179,8 @@ if __name__ == "__main__":
     print(change_pin_tool.func(USER_DATA, "1234", "5678"))
     print("Case 2: Correct old PIN")
     print(change_pin_tool.func(USER_DATA, "0000", "5678"))
+    print("Verifying new PIN by changing it back:")
+    print(change_pin_tool.func(USER_DATA, "5678", "0000"))
 
     print("\n---- View Card Details Tool ----")
     print(view_card_details_tool.func(USER_DATA))
