@@ -1,6 +1,7 @@
-from langchain.tools import StructuredTool
+import bcrypt
 from pydantic import BaseModel, Field
 from base64 import b64encode, b64decode
+from langchain_core.tools import StructuredTool
 
 
 ###### Change PIN Tool ######
@@ -13,13 +14,11 @@ class ChangePINInput(BaseModel):
 
 # adjust here the encoding
 def change_pin(USER_DATA: dict, old_pin: str, new_pin: str) -> str:
-    old_pin = b64encode(old_pin.encode()).decode()
-    new_pin = b64encode(new_pin.encode()).decode()
     if USER_DATA.get("pinHash") is None:
         return "No existing PIN found. Cannot change PIN."
-    if USER_DATA["pinHash"] != old_pin:
+    if not bcrypt.checkpw(old_pin.encode(), USER_DATA["pinHash"].encode()):
         return "The old PIN provided is incorrect."
-    USER_DATA["pinHash"] = new_pin
+    USER_DATA["pinHash"] = bcrypt.hashpw(new_pin.encode(), bcrypt.gensalt()).decode()
     return "PIN changed successfully."
 
 change_pin_tool = StructuredTool.from_function(
@@ -73,12 +72,12 @@ def list_recent_transactions(USER_DATA: dict, count: int) -> str:
     transaction_details = []
     for txn in recent_transactions:
         detail = f"""
-        Date: {txn.get('date', 'N/A')} Time: {txn.get('time', 'N/A')},
-        Terminal Location: {txn.get('terminalLocation', 'N/A')},
-        Amount: {txn.get('transactionAmount', 'N/A')},
-        Currency: {txn.get('transactionCurrency', 'N/A')},
-        Response: {txn.get('responseCodeDescription', 'N/A')}
-        """
+Date: {txn.get('date', 'N/A')} Time: {txn.get('time', 'N/A')},
+Terminal Location: {txn.get('terminalLocation', 'N/A')},
+Amount: {txn.get('transactionAmount', 'N/A')},
+Currency: {txn.get('transactionCurrency', 'N/A')},
+Response: {txn.get('responseCodeDescription', 'N/A')}
+""".strip()
         transaction_details.append(detail)
     return "\n".join(transaction_details)
 
@@ -88,3 +87,101 @@ list_recent_transactions_tool = StructuredTool.from_function(
     description="Lists recent transactions made with the user's card.",
     args_schema=ListRecentTransactionsInput
 )
+
+if __name__ == "__main__":
+    USER_DATA = {
+        "_id": {
+            "$oid": "690d99a78d4d382f6faeceb9"
+        },
+        "clientId": "1001",
+        "cardToken": "?A96CEEA242F1F97",
+        "cardNumber": "5000214044289662",
+        "type": "DEBIT",
+        "productType": "CLASSIC",
+        "currency": "840",
+        "limitProfile": "MTY-CC1",
+        "status": "A",
+        "expiryDate": "30112025",
+        "cvv2": "733",
+        "pinHash": "$2b$12$/O8cPcOSS1BUOg2QKHgNQux6vinIivi5bhJEUJzOq6EtibnWzn9q2",
+        "availableBalance": 125,
+        "currentBalance": 125,
+        "cashback": 12.5,
+        "minimumPayment": 10,
+        "pendingAuthorization": 0,
+        "reissue": "N",
+        "statusReason": "",
+        "transactions": [
+            {
+            "date": "28102025",
+            "terminalLocation": "STORE X",
+            "transactionStatus": "Posted",
+            "stanNumber": "070303081853",
+            "terminalId": "FSB",
+            "responseCodeDescription": "APPROVED TRANSACTION",
+            "responseCode": "00",
+            "transactionType": "10",
+            "referenceNumber": "070303081853",
+            "transactionAmount": "12.75",
+            "currency": "840",
+            "time": "070303",
+            "transactionTypeDescription": "PURCHASE - POS"
+            },
+            {
+            "date": "31102025",
+            "terminalLocation": "REBATE",
+            "transactionStatus": "Posted",
+            "stanNumber": "070303081890",
+            "terminalId": "FSB",
+            "responseCodeDescription": "APPROVED TRANSACTION",
+            "responseCode": "00",
+            "transactionType": "23",
+            "referenceNumber": "070303081890",
+            "transactionAmount": "55.00",
+            "currency": "840",
+            "time": "070303",
+            "transactionTypeDescription": "MEMO-CREDIT ADJUSTMENT"
+            },
+            {
+            "date": "06112025",
+            "terminalLocation": "ECOMMERCE Y",
+            "transactionStatus": "Posted",
+            "stanNumber": "070303081902",
+            "terminalId": "FSB",
+            "responseCodeDescription": "APPROVED TRANSACTION",
+            "responseCode": "00",
+            "transactionType": "11",
+            "referenceNumber": "070303081902",
+            "transactionAmount": "8.90",
+            "currency": "840",
+            "time": "070303",
+            "transactionTypeDescription": "PURCHASE - ECOM"
+            }
+        ],
+        "embossingName1": "RAMI K",
+        "embossingName2": "",
+        "firstName": "Rami",
+        "lastName": "Khoury",
+        "address1": "Hamra Street 12",
+        "city": "Beirut",
+        "mobile": "+96170123456",
+        "dob": "1990-01-10",
+        "marital": "S",
+        "gender": "M",
+        "email": "rami.k@example.com",
+        "channelId": "MOB",
+        "cardLimit": "0",
+        "design": ""
+    }
+    # Example usage of the tools
+    print("---- Change PIN Tool ----")
+    print("Case 1: Incorrect old PIN")
+    print(change_pin_tool.func(USER_DATA, "1234", "5678"))
+    print("Case 2: Correct old PIN")
+    print(change_pin_tool.func(USER_DATA, "0000", "5678"))
+
+    print("\n---- View Card Details Tool ----")
+    print(view_card_details_tool.func(USER_DATA))
+
+    print("\n---- List Recent Transactions Tool ----")
+    print(list_recent_transactions_tool.func(USER_DATA, 2))
