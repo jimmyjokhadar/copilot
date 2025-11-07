@@ -1,0 +1,12 @@
+langchain
+langchain-core
+langchain-community
+langchain-ollama
+dotenv
+pymongo
+fastmcp
+bcrypt
+langgraph
+langgraph-checkpoint-redis
+pydantic
+ollama
