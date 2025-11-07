@@ -1,30 +1,57 @@
 import bcrypt
 from pydantic import BaseModel, Field
-from base64 import b64encode, b64decode
 from langchain_core.tools import StructuredTool
+from pymongo import MongoClient
+from dotenv import load_dotenv
+import os
 
+load_dotenv()
 
 ###### Change PIN Tool ######
 #___________________________#
 
 class ChangePINInput(BaseModel):
-    USER_DATA: dict = Field(..., description="User data containing current PIN information.")
+    clientId: str = Field(..., description="Client ID to identify the user in the database.")
     old_pin: str = Field(..., description="The current PIN code.")
     new_pin: str = Field(..., description="The new PIN code to set.")
 
-# adjust here the encoding
-def change_pin(USER_DATA: dict, old_pin: str, new_pin: str) -> str:
-    if USER_DATA.get("pinHash") is None:
+def change_pin(clientId: str, old_pin: str, new_pin: str) -> str:
+    """Change a user's PIN stored in MongoDB after verifying the old PIN."""
+    mongo_uri = os.getenv("MONGO_URI")
+    if not mongo_uri:
+        return "MONGO_URI not set in environment."
+
+    client = MongoClient(mongo_uri)
+    db = client["fransa_demo"]  # adjust DB name
+    cards = db["cards"]  # adjust collection name
+
+    user = cards.find_one({"clientId": clientId})
+    if not user:
+        return f"No user found with clientId {clientId}."
+
+    pin_hash = user.get("pinHash")
+    if not pin_hash:
         return "No existing PIN found. Cannot change PIN."
-    if not bcrypt.checkpw(old_pin.encode(), USER_DATA["pinHash"].encode()):
+
+    if not bcrypt.checkpw(old_pin.encode(), pin_hash.encode()):
         return "The old PIN provided is incorrect."
-    USER_DATA["pinHash"] = bcrypt.hashpw(new_pin.encode(), bcrypt.gensalt()).decode()
-    return "PIN changed successfully."
+
+    new_hash = bcrypt.hashpw(new_pin.encode(), bcrypt.gensalt()).decode()
+
+    result = cards.update_one(
+        {"clientId": clientId},
+        {"$set": {"pinHash": new_hash}}
+    )
+
+    if result.modified_count == 1:
+        return "PIN changed successfully."
+    else:
+        return "PIN change failed. Try again."
 
 change_pin_tool = StructuredTool.from_function(
     func=change_pin,
     name="change_pin",
-    description="Changes the user's PIN after verifying the old PIN.",
+    description="Changes the user's PIN in MongoDB after verifying the old PIN.",
     args_schema=ChangePINInput
 )
 
@@ -32,31 +59,44 @@ change_pin_tool = StructuredTool.from_function(
 #__________________________________#
 
 class ViewCardDetailsInput(BaseModel):
-    USER_DATA: dict = Field(..., description="User data containing card information.")
+    clientId: str = Field(..., description="Client ID to identify the user's card in the database.")
 
-def view_card_details(USER_DATA: dict) -> str:
+def view_card_details(clientId: str) -> str:
+    """Fetch and display card details for a given clientId from MongoDB."""
+    mongo_uri = os.getenv("MONGO_URI")
+    if not mongo_uri:
+        return "MONGO_URI not set in environment."
+
+    client = MongoClient(mongo_uri)
+    db = client["fransa_demo"]  # adjust DB name
+    cards = db["cards"]  # adjust collection name
+
+    user = cards.find_one({"clientId": clientId})
+    if not user:
+        return f"No card found for clientId {clientId}."
+
     card_info = {
-        "Card Number": USER_DATA.get("cardNumber", "N/A"),
-        "Expiry Date": USER_DATA.get("expiryDate", "N/A"),
-        "Status": USER_DATA.get("status", "N/A"),
-        "Type": USER_DATA.get("type", "N/A"),
-        "Product Type": USER_DATA.get("productType", "N/A"),
-        "Currency": USER_DATA.get("currency", "N/A"),
-        "Available Balance": USER_DATA.get("availableBalance", "N/A"),
-        "Current Balance": USER_DATA.get("currentBalance", "N/A"),
-        "Card Limit": USER_DATA.get("cardLimit", "N/A"),
-        "Cashback Percentage": USER_DATA.get("cashback", "N/A"),
+        "Card Number": user.get("cardNumber", "N/A"),
+        "Expiry Date": user.get("expiryDate", "N/A"),
+        "Status": user.get("status", "N/A"),
+        "Type": user.get("type", "N/A"),
+        "Product Type": user.get("productType", "N/A"),
+        "Currency": user.get("currency", "N/A"),
+        "Available Balance": user.get("availableBalance", "N/A"),
+        "Current Balance": user.get("currentBalance", "N/A"),
+        "Card Limit": user.get("cardLimit", "N/A"),
+        "Cashback Percentage": user.get("cashback", "N/A"),
     }
+
     details = "\n".join([f"{key}: {value}" for key, value in card_info.items()])
     return details
 
 view_card_details_tool = StructuredTool.from_function(
     func=view_card_details,
     name="view_card_details",
-    description="Retrieves and displays the user's card details.",
+    description="Retrieves and displays the user's card details from MongoDB.",
     args_schema=ViewCardDetailsInput
 )
-
 ###### List Recent Transactions Tool ######
 #_________________________________________#
 
