@@ -13,11 +13,13 @@ class ChangePINInput(BaseModel):
 
 # adjust here the encoding
 def change_pin(USER_DATA: dict, old_pin: str, new_pin: str) -> str:
-    if USER_DATA.get("pin") is None:
+    old_pin = b64encode(old_pin.encode()).decode()
+    new_pin = b64encode(new_pin.encode()).decode()
+    if USER_DATA.get("pinHash") is None:
         return "No existing PIN found. Cannot change PIN."
-    if USER_DATA["pin"] != old_pin:
+    if USER_DATA["pinHash"] != old_pin:
         return "The old PIN provided is incorrect."
-    USER_DATA["pin"] = new_pin
+    USER_DATA["pinHash"] = new_pin
     return "PIN changed successfully."
 
 change_pin_tool = StructuredTool.from_function(
@@ -54,4 +56,35 @@ view_card_details_tool = StructuredTool.from_function(
     name="view_card_details",
     description="Retrieves and displays the user's card details.",
     args_schema=ViewCardDetailsInput
+)
+
+###### List Recent Transactions Tool ######
+#_________________________________________#
+
+class ListRecentTransactionsInput(BaseModel):
+    USER_DATA: dict = Field(..., description="User data containing transaction information.")
+    count: int = Field(5, description="Number of recent transactions to retrieve.")
+
+def list_recent_transactions(USER_DATA: dict, count: int) -> str:
+    transactions = USER_DATA.get("transactions", [])
+    recent_transactions = transactions[:count]
+    if not recent_transactions:
+        return "No transactions found."
+    transaction_details = []
+    for txn in recent_transactions:
+        detail = f"""
+        Date: {txn.get('date', 'N/A')} Time: {txn.get('time', 'N/A')},
+        Terminal Location: {txn.get('terminalLocation', 'N/A')},
+        Amount: {txn.get('transactionAmount', 'N/A')},
+        Currency: {txn.get('transactionCurrency', 'N/A')},
+        Response: {txn.get('responseCodeDescription', 'N/A')}
+        """
+        transaction_details.append(detail)
+    return "\n".join(transaction_details)
+
+list_recent_transactions_tool = StructuredTool.from_function(
+    func=list_recent_transactions,
+    name="list_recent_transactions",
+    description="Lists recent transactions made with the user's card.",
+    args_schema=ListRecentTransactionsInput
 )
