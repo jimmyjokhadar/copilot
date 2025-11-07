@@ -18,7 +18,7 @@ TOOLS = [
 ]
 
 # 2. Bind tools to LLM
-LLM = ChatOllama(model="gpt-oss:20b", temperature=0).bind_tools(TOOLS)
+LLM = ChatOllama(model="gpt-oss:latest", temperature=0).bind_tools(TOOLS)
 
 # 3. Create tool execution node
 tool_node = ToolNode(TOOLS)
