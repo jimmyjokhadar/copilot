@@ -1,3 +1,4 @@
+import pymongo 
 def intent_prompt(user_input):
     prompt = f"""given the following user input: {user_input}, check the intent of the user input and classify it into one of the following categories:
 1. General Query: output "General_Query" if the user is asking a general question or seeking information."
