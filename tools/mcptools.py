@@ -77,6 +77,7 @@ Terminal Location: {txn.get('terminalLocation', 'N/A')},
 Amount: {txn.get('transactionAmount', 'N/A')},
 Currency: {txn.get('transactionCurrency', 'N/A')},
 Response: {txn.get('responseCodeDescription', 'N/A')}
+Reference Number: {txn.get('referenceNumber', 'N/A')}
 """.strip()
         transaction_details.append(detail)
     return "\n".join(transaction_details)
