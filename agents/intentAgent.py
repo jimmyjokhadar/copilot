@@ -36,8 +36,12 @@ def fallback_node(state: IntentState) -> IntentState:
 
 def route_by_intent(state: IntentState) -> str:
     intent = state["intent"]
-    if intent in ["banking", "account", "card", "transaction"]:
+    if intent == "customer_request":
         return "banking_node"
+    elif intent == "general_query":
+        return "fallback_node" #### Currently routing general queries to fallback
+    elif intent == "sql_query":
+        return "fallback_node" #### Currently routing SQL queries to fallback
     else:
         return "fallback_node"
 
