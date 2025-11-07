@@ -4,7 +4,9 @@ from langchain_core.tools import StructuredTool
 from pymongo import MongoClient
 from dotenv import load_dotenv
 import os
-
+from pprint import pprint
+import bcrypt
+from datetime import datetime
 load_dotenv()
 
 ###### Change PIN Tool ######
@@ -101,170 +103,102 @@ view_card_details_tool = StructuredTool.from_function(
 #_________________________________________#
 
 class ListRecentTransactionsInput(BaseModel):
-    USER_DATA: dict = Field(..., description="User data containing transaction information.")
+    clientId: str = Field(..., description="Client ID to identify the user's card in the database.")
     count: int = Field(5, description="Number of recent transactions to retrieve.")
 
-def list_recent_transactions(USER_DATA: dict, count: int) -> str:
-    transactions = USER_DATA.get("transactions", [])
-    recent_transactions = transactions[:count]
-    if not recent_transactions:
+def list_recent_transactions(clientId: str, count: int = 5) -> str:
+    """Retrieve and list recent transactions for a user from MongoDB."""
+    mongo_uri = os.getenv("MONGO_URI")
+    if not mongo_uri:
+        return "MONGO_URI not set in environment."
+
+    client = MongoClient(mongo_uri)
+    db = client["fransa_demo"]
+    cards = db["cards"]
+
+    user = cards.find_one({"clientId": clientId})
+    if not user:
+        return f"No card found for clientId {clientId}."
+
+    transactions = user.get("transactions", [])
+    if not transactions:
         return "No transactions found."
+
+    recent_transactions = transactions[:count]
     transaction_details = []
     for txn in recent_transactions:
         detail = f"""
-Date: {txn.get('date', 'N/A')} Time: {txn.get('time', 'N/A')},
-Terminal Location: {txn.get('terminalLocation', 'N/A')},
-Amount: {txn.get('transactionAmount', 'N/A')},
-Currency: {txn.get('transactionCurrency', 'N/A')},
+Date: {txn.get('date', 'N/A')}  Time: {txn.get('time', 'N/A')}
+Terminal Location: {txn.get('terminalLocation', 'N/A')}
+Amount: {txn.get('transactionAmount', 'N/A')}
+Currency: {txn.get('transactionCurrency', 'N/A')}
 Response: {txn.get('responseCodeDescription', 'N/A')}
 Reference Number: {txn.get('referenceNumber', 'N/A')}
 """.strip()
         transaction_details.append(detail)
-    return "\n".join(transaction_details)
+
+    return "\n\n".join(transaction_details)
 
 list_recent_transactions_tool = StructuredTool.from_function(
     func=list_recent_transactions,
     name="list_recent_transactions",
-    description="Lists recent transactions made with the user's card.",
+    description="Lists recent transactions for a user fetched from MongoDB (fransa_demo.cards).",
     args_schema=ListRecentTransactionsInput
 )
 
 ###### List Transactions Per Date Range Tool ######
-#_________________________________________________#
 
 class ListTransactionsDateRangeInput(BaseModel):
-    USER_DATA: dict = Field(..., description="User data containing transaction information.")
+    clientId: str = Field(..., description="Client ID to identify the user's card in the database.")
     start_date: str = Field(..., description="Start date in YYYYMMDD format.")
     end_date: str = Field(..., description="End date in YYYYMMDD format.")
 
-def list_transactions_date_range(USER_DATA: dict, start_date: str, end_date: str) -> str:
-    transactions = USER_DATA.get("transactions", [])
+def list_transactions_date_range(clientId: str, start_date: str, end_date: str) -> str:
+    """Retrieve all transactions for a user within a given date range from MongoDB."""
+    mongo_uri = os.getenv("MONGO_URI")
+    if not mongo_uri:
+        return "MONGO_URI not set in environment."
+
+    client = MongoClient(mongo_uri)
+    db = client["fransa_demo"]
+    cards = db["cards"]
+
+    user = cards.find_one({"clientId": clientId})
+    if not user:
+        return f"No card found for clientId {clientId}."
+
+    transactions = user.get("transactions", [])
+    if not transactions:
+        return "No transactions found for this user."
+
     filtered_transactions = [
         txn for txn in transactions
         if start_date <= txn.get("date", "") <= end_date
     ]
+
     if not filtered_transactions:
-        return "No transactions found in the specified date range."
+        return f"No transactions found between {start_date} and {end_date}."
+
     transaction_details = []
     for txn in filtered_transactions:
         detail = f"""
-Date: {txn.get('date', 'N/A')} Time: {txn.get('time', 'N/A')},
-Terminal Location: {txn.get('terminalLocation', 'N/A')},
-Amount: {txn.get('transactionAmount', 'N/A')},
-Currency: {txn.get('transactionCurrency', 'N/A')},
+Date: {txn.get('date', 'N/A')}  Time: {txn.get('time', 'N/A')}
+Terminal Location: {txn.get('terminalLocation', 'N/A')}
+Amount: {txn.get('transactionAmount', 'N/A')}
+Currency: {txn.get('transactionCurrency', 'N/A')}
 Response: {txn.get('responseCodeDescription', 'N/A')}
 Reference Number: {txn.get('referenceNumber', 'N/A')}
-- 
 """.strip()
         transaction_details.append(detail)
-    return "\n".join(transaction_details)
+
+    return "\n\n".join(transaction_details)
 
 list_transactions_date_range_tool = StructuredTool.from_function(
     func=list_transactions_date_range,
     name="list_transactions_date_range",
-    description="Lists transactions made with the user's card within a specified date range.",
+    description="Lists all transactions for a user within a given date range from MongoDB (fransa_demo.cards).",
     args_schema=ListTransactionsDateRangeInput
 )
 
 if __name__ == "__main__":
-    USER_DATA = {
-        "_id": {
-            "$oid": "690d99a78d4d382f6faeceb9"
-        },
-        "clientId": "1001",
-        "cardToken": "?A96CEEA242F1F97",
-        "cardNumber": "5000214044289662",
-        "type": "DEBIT",
-        "productType": "CLASSIC",
-        "currency": "840",
-        "limitProfile": "MTY-CC1",
-        "status": "A",
-        "expiryDate": "30112025",
-        "cvv2": "733",
-        "pinHash": "$2b$12$/O8cPcOSS1BUOg2QKHgNQux6vinIivi5bhJEUJzOq6EtibnWzn9q2",
-        "availableBalance": 125,
-        "currentBalance": 125,
-        "cashback": 12.5,
-        "minimumPayment": 10,
-        "pendingAuthorization": 0,
-        "reissue": "N",
-        "statusReason": "",
-        "transactions": [
-            {
-            "date": "28102025",
-            "terminalLocation": "STORE X",
-            "transactionStatus": "Posted",
-            "stanNumber": "070303081853",
-            "terminalId": "FSB",
-            "responseCodeDescription": "APPROVED TRANSACTION",
-            "responseCode": "00",
-            "transactionType": "10",
-            "referenceNumber": "070303081853",
-            "transactionAmount": "12.75",
-            "currency": "840",
-            "time": "070303",
-            "transactionTypeDescription": "PURCHASE - POS"
-            },
-            {
-            "date": "31102025",
-            "terminalLocation": "REBATE",
-            "transactionStatus": "Posted",
-            "stanNumber": "070303081890",
-            "terminalId": "FSB",
-            "responseCodeDescription": "APPROVED TRANSACTION",
-            "responseCode": "00",
-            "transactionType": "23",
-            "referenceNumber": "070303081890",
-            "transactionAmount": "55.00",
-            "currency": "840",
-            "time": "070303",
-            "transactionTypeDescription": "MEMO-CREDIT ADJUSTMENT"
-            },
-            {
-            "date": "06112025",
-            "terminalLocation": "ECOMMERCE Y",
-            "transactionStatus": "Posted",
-            "stanNumber": "070303081902",
-            "terminalId": "FSB",
-            "responseCodeDescription": "APPROVED TRANSACTION",
-            "responseCode": "00",
-            "transactionType": "11",
-            "referenceNumber": "070303081902",
-            "transactionAmount": "8.90",
-            "currency": "840",
-            "time": "070303",
-            "transactionTypeDescription": "PURCHASE - ECOM"
-            }
-        ],
-        "embossingName1": "RAMI K",
-        "embossingName2": "",
-        "firstName": "Rami",
-        "lastName": "Khoury",
-        "address1": "Hamra Street 12",
-        "city": "Beirut",
-        "mobile": "+96170123456",
-        "dob": "1990-01-10",
-        "marital": "S",
-        "gender": "M",
-        "email": "rami.k@example.com",
-        "channelId": "MOB",
-        "cardLimit": "0",
-        "design": ""
-    }
-    # Example usage of the tools
-    print("---- Change PIN Tool ----")
-    print("Case 1: Incorrect old PIN")
-    print(change_pin_tool.func(USER_DATA, "1234", "5678"))
-    print("Case 2: Correct old PIN")
-    print(change_pin_tool.func(USER_DATA, "0000", "5678"))
-    print("Verifying new PIN by changing it back:")
-    print(change_pin_tool.func(USER_DATA, "5678", "0000"))
-
-    print("\n---- View Card Details Tool ----")
-    print(view_card_details_tool.func(USER_DATA))
-
-    print("\n---- List Recent Transactions Tool ----")
-    print(list_recent_transactions_tool.func(USER_DATA, 2))
-
-    print("\n---- List Transactions Per Date Range Tool ----")
-    print(list_transactions_date_range(USER_DATA, "28102025", "28102025"))
+    pass 
