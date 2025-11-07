@@ -3,6 +3,7 @@ from langgraph.graph import MessagesState, StateGraph, START, END
 from langgraph.prebuilt import ToolNode
 from langchain_ollama import ChatOllama
 from prompts.banking_prompt import banking_prompt
+from agents.intentAgent import create_intent_agent
 
 from tools.mcptools import (
     change_pin_tool,
