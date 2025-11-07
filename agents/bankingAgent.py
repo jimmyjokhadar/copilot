@@ -1,5 +1,6 @@
 from typing import Dict, Any
 from langgraph.graph import MessagesState, StateGraph, START, END
+from langgraph.prebuilt import ToolNode
 from langchain_ollama import ChatOllama
 from prompts.banking_prompt import banking_prompt
 
@@ -17,7 +18,10 @@ TOOLS = [
 ]
 
 # 2. Bind tools to LLM
-LLM = ChatOllama(model="gpt-oss:latest", temperature=0).bind_tools(TOOLS)
+LLM = ChatOllama(model="gpt-oss:20b", temperature=0).bind_tools(TOOLS)
+
+# 3. Create tool execution node
+tool_node = ToolNode(TOOLS)
 def banking_llm_agent(state: MessagesState) -> Dict[str, Any]:
     """
     Core node: takes messages and returns an AI message
@@ -61,18 +65,54 @@ def banking_llm_agent(state: MessagesState) -> Dict[str, Any]:
     ai_msg = LLM.invoke(messages)
     return {"messages": messages + [ai_msg]}
 
-# 4. Build graph
+# 4. Router function to decide if we should use tools or end
+def should_continue(state: MessagesState) -> str:
+    """
+    Determines whether to continue to tool execution or end.
+    """
+    messages = state["messages"]
+    last_message = messages[-1]
+    
+    # If the last message has tool calls, route to tools
+    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
+        return "tools"
+    # Otherwise, end the conversation
+    return "end"
+
+# 5. Build graph
 def create_banking_agent():
     builder = StateGraph(MessagesState)
+    
+    # Add nodes
     builder.add_node("card_llm_agent", banking_llm_agent)
+    builder.add_node("tools", tool_node)
+    
+    # Add edges
     builder.add_edge(START, "card_llm_agent")
-    builder.add_edge("card_llm_agent", END)
+    
+    # Add conditional edge from agent
+    builder.add_conditional_edges(
+        "card_llm_agent",
+        should_continue,
+        {
+            "tools": "tools",
+            "end": END
+        }
+    )
+    
+    # After tools are executed, go back to the agent
+    builder.add_edge("tools", "card_llm_agent")
+    
     return builder.compile()
 
 
-# 5. Run agent
+# 6. Run agent
 if __name__ == "__main__":
     agent = create_banking_agent()
     user_message = {"role": "user", "content": "Show my last 3 transactions."}
     result = agent.invoke({"messages": [user_message]})
-    print(result)
+    
+    # Print the final response
+    print("\n=== Final Response ===")
+    final_message = result["messages"][-1]
+    print(final_message.content if hasattr(final_message, "content") else final_message)
