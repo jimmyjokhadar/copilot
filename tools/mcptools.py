@@ -89,6 +89,36 @@ list_recent_transactions_tool = StructuredTool.from_function(
     args_schema=ListRecentTransactionsInput
 )
 
+###### List Transactions Per Date Range Tool ######
+#_________________________________________________#
+
+class ListTransactionsDateRangeInput(BaseModel):
+    USER_DATA: dict = Field(..., description="User data containing transaction information.")
+    start_date: str = Field(..., description="Start date in YYYYMMDD format.")
+    end_date: str = Field(..., description="End date in YYYYMMDD format.")
+
+def list_transactions_date_range(USER_DATA: dict, start_date: str, end_date: str) -> str:
+    transactions = USER_DATA.get("transactions", [])
+    filtered_transactions = [
+        txn for txn in transactions
+        if start_date <= txn.get("date", "") <= end_date
+    ]
+    if not filtered_transactions:
+        return "No transactions found in the specified date range."
+    transaction_details = []
+    for txn in filtered_transactions:
+        detail = f"""
+Date: {txn.get('date', 'N/A')} Time: {txn.get('time', 'N/A')},
+Terminal Location: {txn.get('terminalLocation', 'N/A')},
+Amount: {txn.get('transactionAmount', 'N/A')},
+Currency: {txn.get('transactionCurrency', 'N/A')},
+Response: {txn.get('responseCodeDescription', 'N/A')}
+Reference Number: {txn.get('referenceNumber', 'N/A')}
+- 
+""".strip()
+        transaction_details.append(detail)
+    return "\n".join(transaction_details)
+
 if __name__ == "__main__":
     USER_DATA = {
         "_id": {
@@ -188,3 +218,6 @@ if __name__ == "__main__":
 
     print("\n---- List Recent Transactions Tool ----")
     print(list_recent_transactions_tool.func(USER_DATA, 2))
+
+    print("\n---- List Transactions Per Date Range Tool ----")
+    print(list_transactions_date_range(USER_DATA, "28102025", "28102025"))
