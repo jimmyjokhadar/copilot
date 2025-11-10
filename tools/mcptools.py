@@ -150,8 +150,8 @@ list_recent_transactions_tool = StructuredTool.from_function(
 
 class ListTransactionsDateRangeInput(BaseModel):
     clientId: str = Field(..., description="Client ID to identify the user's card in the database.")
-    start_date: str = Field(..., description="Start date in YYYYMMDD format.")
-    end_date: str = Field(..., description="End date in YYYYMMDD format.")
+    start_date: str = Field(..., description="Start date in DDMMYYYY format.")
+    end_date: str = Field(..., description="End date in DDMMYYYY format.")
 
 def list_transactions_date_range(clientId: str, start_date: str, end_date: str) -> str:
     """Retrieve all transactions for a user within a given date range from MongoDB."""
