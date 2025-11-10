@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 from dotenv import load_dotenv
+from pymongo import MongoClient
 import requests
 import os
 from datetime import datetime
@@ -10,30 +11,33 @@ from agents.intentAgent import create_intent_agent
 
 load_dotenv()
 
+MONGO_URI = os.getenv("MONGO_URI")
+SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
+
+if not MONGO_URI or not SLACK_BOT_TOKEN:
+    raise RuntimeError("Missing MONGO_URI or SLACK_BOT_TOKEN in environment variables")
+
+client = MongoClient(MONGO_URI)
+db = client["fransa_demo"]
+users_col = db["users"]
+
 app = FastAPI(title="Banking Assistant API")
 
-# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Adjust this in production
+    allow_origins=["*"],  # tighten this later in production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Initialize the intent agent
 intent_agent = create_intent_agent()
-
-# In-memory session storage (use Redis or database in production)
 chat_sessions: Dict[str, List[Dict[str, str]]] = {}
 
-# Store processed event IDs to prevent duplicate processing
-processed_events: set = set()
-
-# Request/Response Models
 class ChatMessage(BaseModel):
     message: str
     session_id: Optional[str] = None
+
 
 class ChatResponse(BaseModel):
     response: str
@@ -41,14 +45,10 @@ class ChatResponse(BaseModel):
     session_id: str
     conversation_history: List[Dict[str, str]]
 
+
 class SessionResponse(BaseModel):
     session_id: str
     conversation_history: List[Dict[str, str]]
-
-SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
-SLACK_BOT_USER_ID = os.getenv("SLACK_BOT_USER_ID")  # Optional: Set this in .env for extra safety
-print(f"[INFO] SLACK_BOT_TOKEN configured: {bool(SLACK_BOT_TOKEN)}")
-print(f"[INFO] SLACK_BOT_USER_ID: {SLACK_BOT_USER_ID or 'Not set (will be auto-detected)'}")
 
 def send_message_to_slack(channel: str, text: str):
     headers = {
@@ -57,232 +57,161 @@ def send_message_to_slack(channel: str, text: str):
     }
     payload = {"channel": channel, "text": text}
     requests.post("https://slack.com/api/chat.postMessage", headers=headers, json=payload)
-
-
 @app.post("/slack/events")
 async def slack_events(request: Request):
+    # Handle Slack retries
+    if request.headers.get("X-Slack-Retry-Num"):
+        retry_num = request.headers.get("X-Slack-Retry-Num")
+        reason = request.headers.get("X-Slack-Retry-Reason")
+        print(f"[DEBUG] Ignoring Slack retry #{retry_num} (reason: {reason})")
+        return {"ok": True}
     data = await request.json()
-    print("[DEBUG] Incoming Slack event:", data)  # Log all incoming events
-
-    # URL verification
+    print(f"\n[DEBUG] Incoming Slack event at {datetime.now()}")
+    print(f"[DEBUG] Payload type: {data.get('type')}")
+    
+    # URL verification handshake
     if data.get("type") == "url_verification":
+        print("[DEBUG] URL verification challenge received.")
         return {"challenge": data["challenge"]}
 
     # Event callback
     if data.get("type") == "event_callback":
-        event = data["event"]
-        
-        # Deduplication: Check if we've already processed this event
-        event_id = data.get("event_id")
-        if event_id and event_id in processed_events:
-            print(f"[DEBUG] Duplicate event {event_id}, skipping")
-            return {"ok": True}
-        
-        # Add to processed events (keep last 1000 to prevent memory issues)
-        if event_id:
-            processed_events.add(event_id)
-            if len(processed_events) > 1000:
-                processed_events.pop()  # Remove oldest
+        event = data.get("event", {})
+        print(f"[DEBUG] Slack event received: {event.get('type')} | Subtype: {event.get('subtype')}")
 
-        # Only process 'message' events (not app_mention, etc.)
-        if event.get("type") not in ["message", "app_mention"]:
-            print(f"[DEBUG] Ignoring non-message event type: {event.get('type')}")
-            return {"ok": True}
-
-        # Ignore bot messages, message changes/deletes, or messages without a user
-        # CRITICAL: Check bot_id and bot_profile to prevent responding to own messages
-        if (event.get("subtype") == "bot_message" or 
-            event.get("bot_id") is not None or 
-            event.get("bot_profile") is not None or
-            event.get("user") is None or
-            event.get("subtype") in ["message_changed", "message_deleted"]):
-            print(f"[DEBUG] Ignoring bot or system message (subtype: {event.get('subtype')}, bot_id: {event.get('bot_id')})")
+        # Ignore bot messages and system noise
+        if event.get("subtype") == "bot_message" or not event.get("user"):
+            print("[DEBUG] Ignored event (bot message or missing user).")
             return {"ok": True}
 
         user_id = event["user"]
         channel = event["channel"]
-        text = event.get("text", "")
-        
-        # Extra safety: Don't respond to messages from the bot itself
-        if SLACK_BOT_USER_ID and user_id == SLACK_BOT_USER_ID:
-            print(f"[DEBUG] Ignoring message from bot user ID: {user_id}")
-            return {"ok": True}
+        text = event.get("text", "").strip()
 
-        print(f"[DEBUG] Processing message from user {user_id} in channel {channel}: {text}")
+        print(f"[DEBUG] User message from {user_id} in channel {channel}: '{text}'")
 
-        # Maintain per-user session
+        # Lookup Mongo user linked to this Slack ID
+        user_doc = users_col.find_one({"slack_id": user_id})
+        if not user_doc:
+            print(f"[DEBUG] Unregistered Slack user {user_id}. Rejecting message.")
+            send_message_to_slack(channel, "❌ Unregistered user. Please register your Slack account.")
+            return {"ok": False}
+
+        client_id = user_doc.get("clientId")
+        auth_token = user_doc.get("authToken")
+
+        print(f"[DEBUG] Authenticated Slack user {user_id} → Mongo clientId {client_id}")
+
+        # Maintain per-user chat session
         session_id = f"slack_{user_id}"
         chat_sessions.setdefault(session_id, [])
+        print(f"[DEBUG] Session loaded: {session_id} | {len(chat_sessions[session_id])} previous messages")
 
+        # Process message through the intent agent
         try:
-            # Process message through intent agent
+            print("[DEBUG] Invoking intent agent...")
             result = intent_agent.invoke({
                 "user_input": text,
-                "conversation_history": chat_sessions[session_id]
+                "conversation_history": chat_sessions[session_id],
+                "clientId": client_id,
+                "authToken": auth_token
             })
+            print("[DEBUG] Intent agent returned successfully.")
 
-            response_text = result["result"]["content"]
+            response_text = result.get("result", {}).get("content", "No response")
             chat_sessions[session_id] = result.get("conversation_history", [])
-
-            print(f"[DEBUG] Sending response to channel {channel}: {response_text[:50]}...")
-
-            # Send reply to Slack
-            headers = {
-                "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
-                "Content-Type": "application/json"
-            }
-            payload = {"channel": channel, "text": response_text}
-            res = requests.post("https://slack.com/api/chat.postMessage", headers=headers, json=payload)
-
-            res_json = res.json()
-            if not res_json.get("ok"):
-                # Log Slack API errors
-                print(f"[ERROR] Failed to send message to Slack: {res_json}")
-            else:
-                print(f"[DEBUG] Successfully sent message to Slack")
+            print(f"[DEBUG] Response ready: {response_text[:80]}...")  # truncate to 80 chars
 
         except Exception as e:
-            print(f"[ERROR] Exception handling Slack message: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"[ERROR] Slack event processing failed: {e}")
+            send_message_to_slack(channel, f"⚠️ Error: {str(e)}")
+            return {"ok": False}
 
+        # Send reply to Slack
+        print(f"[DEBUG] Sending reply back to Slack channel {channel}")
+        send_message_to_slack(channel, response_text)
+
+    print("[DEBUG] Slack event processed successfully.")
     return {"ok": True}
-
-
-
-
-@app.get("/")
-def read_root():
-    return {"message": "Welcome to the Banking Assistant API!", "status": "running", "version": "1.0.0"}
-
-@app.get("/health")
-def health_check():
-    return {"status": "ok"}
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(chat_message: ChatMessage):
     """
-    Send a message to the intent agent and get a response.
-    Maintains conversation history per session.
-    
-    IMPORTANT: Always provide the same session_id to maintain conversation context.
-    If no session_id is provided, a new session will be created.
+    Endpoint for frontend or Gradio clients (not Slack).
+    Maintains session context and routes messages to the intent agent.
     """
     try:
-        # Get or create session
+        # Session handling
         if chat_message.session_id:
-            # Use existing session
             session_id = chat_message.session_id
-            # Initialize session if it doesn't exist
-            if session_id not in chat_sessions:
-                chat_sessions[session_id] = []
-            conversation_history = chat_sessions[session_id]
+            chat_sessions.setdefault(session_id, [])
         else:
-            # Create new session only if no session_id provided
             session_id = f"session_{datetime.now().timestamp()}"
             chat_sessions[session_id] = []
-            conversation_history = []
-        
-        # Process the message through the intent agent
+
+        conversation_history = chat_sessions[session_id]
+
+        # Agent invocation (no Slack-based authentication here)
         result = intent_agent.invoke({
             "user_input": chat_message.message,
             "conversation_history": conversation_history
         })
-        
-        # Update session history from the result
-        # The intent agent returns updated conversation_history in the result
+
         updated_history = result.get("conversation_history", [])
         chat_sessions[session_id] = updated_history
-        
-        print(f"[DEBUG] Updated history length: {len(updated_history)}")
-        print(f"[DEBUG] Response: {result['result']['content'][:100]}...")
-        
+
+        print(f"[DEBUG] Chat session {session_id}, messages: {len(updated_history)}")
+
         return ChatResponse(
             response=result["result"]["content"],
             intent=result["intent"],
             session_id=session_id,
             conversation_history=updated_history
         )
-    
+
     except Exception as e:
-        print(f"[ERROR] {str(e)}")
+        print(f"[ERROR] /chat failed: {e}")
         raise HTTPException(status_code=500, detail=f"Error processing message: {str(e)}")
 
 @app.post("/chat/new", response_model=SessionResponse)
 async def new_chat_session():
-    """
-    Create a new chat session with empty conversation history.
-    """
     session_id = f"session_{datetime.now().timestamp()}"
     chat_sessions[session_id] = []
-    
-    return SessionResponse(
-        session_id=session_id,
-        conversation_history=[]
-    )
+    return SessionResponse(session_id=session_id, conversation_history=[])
+
 
 @app.get("/chat/session/{session_id}", response_model=SessionResponse)
 async def get_session(session_id: str):
-    """
-    Retrieve conversation history for a specific session.
-    """
     if session_id not in chat_sessions:
         raise HTTPException(status_code=404, detail="Session not found")
-    
-    return SessionResponse(
-        session_id=session_id,
-        conversation_history=chat_sessions[session_id]
-    )
+    return SessionResponse(session_id=session_id, conversation_history=chat_sessions[session_id])
+
 
 @app.delete("/chat/session/{session_id}")
 async def clear_session(session_id: str):
-    """
-    Clear the conversation history for a specific session.
-    """
     if session_id not in chat_sessions:
         raise HTTPException(status_code=404, detail="Session not found")
-    
     chat_sessions[session_id] = []
-    
     return {"message": "Session cleared successfully", "session_id": session_id}
+
 
 @app.get("/chat/sessions")
 async def list_sessions():
-    """
-    List all active chat sessions.
-    """
     return {
         "sessions": [
-            {
-                "session_id": sid,
-                "message_count": len(history)
-            }
+            {"session_id": sid, "message_count": len(history)}
             for sid, history in chat_sessions.items()
         ]
     }
 
-@app.post("/admin/clear-event-cache")
-async def clear_event_cache():
-    """
-    Clear the processed events cache. Useful for debugging duplicate message issues.
-    """
-    processed_events.clear()
-    return {
-        "message": "Event cache cleared",
-        "note": "This will allow previously processed events to be processed again"
-    }
+@app.get("/")
+def read_root():
+    return {"message": "Welcome to the Banking Assistant API!", "status": "running", "version": "1.0.0"}
 
-@app.get("/admin/stats")
-async def get_stats():
-    """
-    Get statistics about the application state.
-    """
-    return {
-        "active_sessions": len(chat_sessions),
-        "processed_events_count": len(processed_events),
-        "slack_bot_configured": bool(SLACK_BOT_TOKEN),
-        "slack_bot_user_id_set": bool(SLACK_BOT_USER_ID)
-    }
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
 
 if __name__ == "__main__":
     import uvicorn
