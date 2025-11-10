@@ -37,6 +37,8 @@ chat_sessions: Dict[str, List[Dict[str, str]]] = {}
 class ChatMessage(BaseModel):
     message: str
     session_id: Optional[str] = None
+    clientId: Optional[str] = None
+    authToken: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
@@ -136,25 +138,16 @@ async def slack_events(request: Request):
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(chat_message: ChatMessage):
-    """
-    Endpoint for frontend or Gradio clients (not Slack).
-    Maintains session context and routes messages to the intent agent.
-    """
     try:
-        # Session handling
-        if chat_message.session_id:
-            session_id = chat_message.session_id
-            chat_sessions.setdefault(session_id, [])
-        else:
-            session_id = f"session_{datetime.now().timestamp()}"
-            chat_sessions[session_id] = []
-
+        session_id = chat_message.session_id or f"session_{datetime.now().timestamp()}"
+        chat_sessions.setdefault(session_id, [])
         conversation_history = chat_sessions[session_id]
 
-        # Agent invocation (no Slack-based authentication here)
         result = intent_agent.invoke({
             "user_input": chat_message.message,
-            "conversation_history": conversation_history
+            "conversation_history": conversation_history,
+            "clientId": chat_message.clientId,
+            "authToken": chat_message.authToken
         })
 
         updated_history = result.get("conversation_history", [])
