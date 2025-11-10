@@ -10,3 +10,5 @@ langgraph
 langgraph-checkpoint-redis
 pydantic
 ollama
+fastapi
+uvicorn
