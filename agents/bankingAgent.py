@@ -4,6 +4,9 @@ from langgraph.prebuilt import ToolNode
 from langchain_ollama import ChatOllama
 from prompts.banking_prompt import banking_prompt
 from agents.intentAgent import create_intent_agent
+from dotenv import load_dotenv
+import os
+load_dotenv()
 
 from tools.mcptools import (
     change_pin_tool,
@@ -19,7 +22,7 @@ TOOLS = [
 ]
 
 # 2. Bind tools to LLM
-LLM = ChatOllama(model="gpt-oss:latest", temperature=0).bind_tools(TOOLS)
+LLM = ChatOllama(model=os.getenv("MODEL_NAME"), temperature=0).bind_tools(TOOLS)
 
 # 3. Create tool execution node
 tool_node = ToolNode(TOOLS)
