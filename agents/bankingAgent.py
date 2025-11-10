@@ -12,7 +12,8 @@ from tools.mcptools import (
     change_pin_tool,
     view_card_details_tool,
     list_recent_transactions_tool,
-    list_transactions_date_range_tool
+    list_transactions_date_range_tool,
+    list_client_cards_tool
 )
 
 # 1. Define tools
@@ -20,7 +21,8 @@ TOOLS = [
     change_pin_tool,
     view_card_details_tool,
     list_recent_transactions_tool,
-    list_transactions_date_range_tool
+    list_transactions_date_range_tool,
+    list_client_cards_tool
 ]
 
 # 2. Bind tools to LLM

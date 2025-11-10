@@ -150,10 +150,11 @@ list_recent_transactions_tool = StructuredTool.from_function(
 
 class ListTransactionsDateRangeInput(BaseModel):
     clientId: str = Field(..., description="Client ID to identify the user's card in the database.")
+    cardNumber: str = Field(..., description="Card number associated with the transactions.")
     start_date: str = Field(..., description="Start date in DDMMYYYY format.")
     end_date: str = Field(..., description="End date in DDMMYYYY format.")
 
-def list_transactions_date_range(clientId: str, start_date: str, end_date: str) -> str:
+def list_transactions_date_range(clientId: str, cardNumber: str, start_date: str, end_date: str) -> str:
     """Retrieve all transactions for a user within a given date range from MongoDB."""
     mongo_uri = os.getenv("MONGO_URI")
     if not mongo_uri:
@@ -163,7 +164,7 @@ def list_transactions_date_range(clientId: str, start_date: str, end_date: str) 
     db = client["fransa_demo"]
     cards = db["cards"]
 
-    user = cards.find_one({"clientId": clientId})
+    user = cards.find_one({"clientId": clientId, "cardNumber": cardNumber})
     if not user:
         return f"No card found for clientId {clientId}."
 
@@ -198,6 +199,48 @@ list_transactions_date_range_tool = StructuredTool.from_function(
     name="list_transactions_date_range",
     description="Lists all transactions for a user within a given date range from MongoDB (fransa_demo.cards).",
     args_schema=ListTransactionsDateRangeInput
+)
+
+###### List Client Cards Tool ######
+#__________________________________#
+
+class ListClientCardsInput(BaseModel):
+    clientId: str = Field(..., description="Client ID to identify the user's cards in the database.")
+
+def list_client_cards(clientId: str) -> str:
+    """Retrieve and list all cards associated with a client from MongoDB."""
+    mongo_uri = os.getenv("MONGO_URI")
+    if not mongo_uri:
+        return "MONGO_URI not set in environment."
+
+    client = MongoClient(mongo_uri)
+    db = client["fransa_demo"]
+    cards = db["cards"]
+
+    user_cards = list(cards.find({"clientId": clientId}))
+    if not user_cards:
+        return f"No cards found for clientId {clientId}."
+
+    card_list = []
+    for idx, card in enumerate(user_cards, 1):
+        card_info = f"""
+Card {idx}:
+  Card Number: {card.get('cardNumber', 'N/A')}
+  Type: {card.get('type', 'N/A')}
+  Product Type: {card.get('productType', 'N/A')}
+  Currency: {card.get('currency', 'N/A')}
+  Status: {card.get('status', 'N/A')}
+  Available Balance: {card.get('availableBalance', 'N/A')}
+""".strip()
+        card_list.append(card_info)
+
+    return "\n\n".join(card_list)
+
+list_client_cards_tool = StructuredTool.from_function(
+    func=list_client_cards,
+    name="list_client_cards",
+    description="Lists all cards associated with a client ID. Use this when you need to show available cards or when a card number is required but not provided.",
+    args_schema=ListClientCardsInput
 )
 
 if __name__ == "__main__":
