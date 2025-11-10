@@ -85,7 +85,7 @@ async def slack_events(request: Request):
                 processed_events.pop()  # Remove oldest
 
         # Only process 'message' events (not app_mention, etc.)
-        if event.get("type") != "message":
+        if event.get("type") not in ["message", "app_mention"]:
             print(f"[DEBUG] Ignoring non-message event type: {event.get('type')}")
             return {"ok": True}
 
