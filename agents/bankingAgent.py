@@ -62,7 +62,7 @@ def banking_llm_agent(state: MessagesState) -> Dict[str, Any]:
         if user_msg:
             system_msg = {
                 "role": "system",
-                "content": banking_prompt(get_content(user_msg))
+                "content": banking_prompt()
             }
             messages = [system_msg] + messages
 
