@@ -2,7 +2,7 @@ langchain
 langchain-core
 langchain-community
 langchain-ollama
-dotenv
+python-dotenv
 pymongo
 fastmcp
 bcrypt
@@ -12,3 +12,5 @@ pydantic
 ollama
 fastapi
 uvicorn
+requests
+python-multipart

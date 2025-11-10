@@ -27,6 +27,9 @@ intent_agent = create_intent_agent()
 # In-memory session storage (use Redis or database in production)
 chat_sessions: Dict[str, List[Dict[str, str]]] = {}
 
+# Store processed event IDs to prevent duplicate processing
+processed_events: set = set()
+
 # Request/Response Models
 class ChatMessage(BaseModel):
     message: str
@@ -43,6 +46,9 @@ class SessionResponse(BaseModel):
     conversation_history: List[Dict[str, str]]
 
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
+SLACK_BOT_USER_ID = os.getenv("SLACK_BOT_USER_ID")  # Optional: Set this in .env for extra safety
+print(f"[INFO] SLACK_BOT_TOKEN configured: {bool(SLACK_BOT_TOKEN)}")
+print(f"[INFO] SLACK_BOT_USER_ID: {SLACK_BOT_USER_ID or 'Not set (will be auto-detected)'}")
 
 def send_message_to_slack(channel: str, text: str):
     headers = {
@@ -56,6 +62,7 @@ def send_message_to_slack(channel: str, text: str):
 @app.post("/slack/events")
 async def slack_events(request: Request):
     data = await request.json()
+    print("[DEBUG] Incoming Slack event:", data)  # Log all incoming events
 
     # URL verification
     if data.get("type") == "url_verification":
@@ -64,37 +71,83 @@ async def slack_events(request: Request):
     # Event callback
     if data.get("type") == "event_callback":
         event = data["event"]
+        
+        # Deduplication: Check if we've already processed this event
+        event_id = data.get("event_id")
+        if event_id and event_id in processed_events:
+            print(f"[DEBUG] Duplicate event {event_id}, skipping")
+            return {"ok": True}
+        
+        # Add to processed events (keep last 1000 to prevent memory issues)
+        if event_id:
+            processed_events.add(event_id)
+            if len(processed_events) > 1000:
+                processed_events.pop()  # Remove oldest
 
-        # Ignore bot messages
-        if event.get("subtype") == "bot_message" or event.get("user") is None:
+        # Only process 'message' events (not app_mention, etc.)
+        if event.get("type") != "message":
+            print(f"[DEBUG] Ignoring non-message event type: {event.get('type')}")
+            return {"ok": True}
+
+        # Ignore bot messages, message changes/deletes, or messages without a user
+        # CRITICAL: Check bot_id and bot_profile to prevent responding to own messages
+        if (event.get("subtype") == "bot_message" or 
+            event.get("bot_id") is not None or 
+            event.get("bot_profile") is not None or
+            event.get("user") is None or
+            event.get("subtype") in ["message_changed", "message_deleted"]):
+            print(f"[DEBUG] Ignoring bot or system message (subtype: {event.get('subtype')}, bot_id: {event.get('bot_id')})")
             return {"ok": True}
 
         user_id = event["user"]
         channel = event["channel"]
         text = event.get("text", "")
+        
+        # Extra safety: Don't respond to messages from the bot itself
+        if SLACK_BOT_USER_ID and user_id == SLACK_BOT_USER_ID:
+            print(f"[DEBUG] Ignoring message from bot user ID: {user_id}")
+            return {"ok": True}
+
+        print(f"[DEBUG] Processing message from user {user_id} in channel {channel}: {text}")
 
         # Maintain per-user session
         session_id = f"slack_{user_id}"
         chat_sessions.setdefault(session_id, [])
 
-        # Process message through intent agent
-        result = intent_agent.invoke({
-            "user_input": text,
-            "conversation_history": chat_sessions[session_id]
-        })
+        try:
+            # Process message through intent agent
+            result = intent_agent.invoke({
+                "user_input": text,
+                "conversation_history": chat_sessions[session_id]
+            })
 
-        response_text = result["result"]["content"]
-        chat_sessions[session_id] = result.get("conversation_history", [])
+            response_text = result["result"]["content"]
+            chat_sessions[session_id] = result.get("conversation_history", [])
 
-        # Send reply to Slack
-        headers = {
-            "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
-            "Content-Type": "application/json"
-        }
-        payload = {"channel": channel, "text": response_text}
-        requests.post("https://slack.com/api/chat.postMessage", headers=headers, json=payload)
+            print(f"[DEBUG] Sending response to channel {channel}: {response_text[:50]}...")
+
+            # Send reply to Slack
+            headers = {
+                "Authorization": f"Bearer {SLACK_BOT_TOKEN}",
+                "Content-Type": "application/json"
+            }
+            payload = {"channel": channel, "text": response_text}
+            res = requests.post("https://slack.com/api/chat.postMessage", headers=headers, json=payload)
+
+            res_json = res.json()
+            if not res_json.get("ok"):
+                # Log Slack API errors
+                print(f"[ERROR] Failed to send message to Slack: {res_json}")
+            else:
+                print(f"[DEBUG] Successfully sent message to Slack")
+
+        except Exception as e:
+            print(f"[ERROR] Exception handling Slack message: {e}")
+            import traceback
+            traceback.print_exc()
 
     return {"ok": True}
+
 
 
 
@@ -206,6 +259,29 @@ async def list_sessions():
             }
             for sid, history in chat_sessions.items()
         ]
+    }
+
+@app.post("/admin/clear-event-cache")
+async def clear_event_cache():
+    """
+    Clear the processed events cache. Useful for debugging duplicate message issues.
+    """
+    processed_events.clear()
+    return {
+        "message": "Event cache cleared",
+        "note": "This will allow previously processed events to be processed again"
+    }
+
+@app.get("/admin/stats")
+async def get_stats():
+    """
+    Get statistics about the application state.
+    """
+    return {
+        "active_sessions": len(chat_sessions),
+        "processed_events_count": len(processed_events),
+        "slack_bot_configured": bool(SLACK_BOT_TOKEN),
+        "slack_bot_user_id_set": bool(SLACK_BOT_USER_ID)
     }
 
 if __name__ == "__main__":
