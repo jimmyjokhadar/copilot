@@ -82,8 +82,9 @@ def view_card_details(clientId: str) -> str:
     cards = db["cards"]  # adjust collection name
 
     users = cards.find({"clientId": clientId})
+    print(f"[DEBUG] view_card_details fetched users: {list(users)}")
 
-    if not users:
+    if len(list(users)) == 0:
         return f"No card found for clientId {clientId}."
     
     
