@@ -90,6 +90,7 @@ def view_card_details(clientId: str) -> str:
     
     cards = []
     for user in users:
+        print(f"[DEBUG] Processing user: {user}")
         user_card_number = user.get("cardNumber", "N/A")
         if user_card_number != "N/A" and len(user_card_number) >= 4:
             masked_card_number = "**** **** **** " + user_card_number[-4:]
