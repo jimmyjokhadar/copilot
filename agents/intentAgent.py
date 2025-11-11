@@ -22,6 +22,7 @@ class IntentState(TypedDict):
     conversation_history: List[Dict[str, str]]
     clientId: str | None
     slack_user_id: str | None  # add actual Slack user
+    context: str | None  # optional context field
 
 # === Extractor ===
 def get_client_id_from_slack_user(slack_user_id: str | None) -> str | None:
@@ -98,6 +99,18 @@ def banking_node(state: IntentState) -> IntentState:
         {"role": "assistant", "content": content},
     ]
 
+    tool_executed = False
+    if hasattr(result, "tool_calls"):
+        tool_executed = len(result.tool_calls) > 0
+    elif isinstance(result, dict) and "tool_calls" in result:
+        tool_executed = bool(result["tool_calls"])
+
+    # --- Determine context based on tool call ---
+    if tool_executed:
+        context = None  # done, task completed
+    else:
+        context = "banking_in_progress"  # still gathering info
+
     return {
         "user_input": state["user_input"],
         "intent": state["intent"],
@@ -105,6 +118,7 @@ def banking_node(state: IntentState) -> IntentState:
         "conversation_history": updated_history,
         "clientId": client_id,
         "slack_user_id": state.get("slack_user_id"),
+        "context": context,
     }
 
 # === Fallback Node ===
@@ -140,7 +154,13 @@ def create_intent_agent():
     builder.add_node("intent_detector", intent_detector)
     builder.add_node("banking_node", banking_node)
     builder.add_node("fallback_node", fallback_node)
-    builder.add_edge(START, "intent_detector")
+
+    def route_entry(state: IntentState):
+        if state.get("context") == "banking_in_progress":
+            return "banking_node"
+        return "intent_detector"
+
+    builder.add_conditional_edges(START, route_entry)
     builder.add_conditional_edges("intent_detector", route_by_intent)
     builder.add_edge("banking_node", END)
     builder.add_edge("fallback_node", END)
