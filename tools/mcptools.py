@@ -13,10 +13,11 @@ load_dotenv()
 
 class ChangePINInput(BaseModel):
     clientId: str = Field(..., description="Client ID to identify the user in the database.")
+    cardNumber: str = Field(..., description="The card number associated with the PIN.")
     old_pin: str = Field(..., description="The current PIN code.")
     new_pin: str = Field(..., description="The new PIN code to set.")
 
-def change_pin(clientId: str, old_pin: str, new_pin: str) -> str:
+def change_pin(clientId: str, cardNumber: str, old_pin: str, new_pin: str) -> str:
     """Change a user's PIN stored in MongoDB after verifying the old PIN."""
     mongo_uri = os.getenv("MONGO_URI")
     if not mongo_uri:
@@ -26,9 +27,17 @@ def change_pin(clientId: str, old_pin: str, new_pin: str) -> str:
     db = client["fransa_demo"]  # adjust DB name
     cards = db["cards"]  # adjust collection name
 
-    user = cards.find_one({"clientId": clientId})
-    if not user:
-        return f"No user found with clientId {clientId}."
+    user_cards = list(cards.find({"clientId": clientId, "cardNumber": {"$exists": True}}))
+
+    if not user_cards:
+        return f"Either no client found with clientId {clientId} or no card associated."
+    elif len(user_cards) == 1:
+        user = user_cards[0]
+    else:
+        if cardNumber:
+            user = cards.find_one({"clientId": clientId, "cardNumber": cardNumber})
+            if not user:
+                return f"No card found for clientId {clientId} with cardNumber {cardNumber}."
 
     pin_hash = user.get("pinHash")
     if not pin_hash:
@@ -72,24 +81,39 @@ def view_card_details(clientId: str) -> str:
     db = client["fransa_demo"]  # adjust DB name
     cards = db["cards"]  # adjust collection name
 
-    user = cards.find_one({"clientId": clientId})
-    if not user:
+    users = cards.find({"clientId": clientId})
+
+    if not users:
         return f"No card found for clientId {clientId}."
+    
+    
+    cards = []
+    for user in users:
+        user_card_number = user.get("cardNumber", "N/A")
+        if user_card_number != "N/A" and len(user_card_number) >= 4:
+            masked_card_number = "**** **** **** " + user_card_number[-4:]
+        else:
+            masked_card_number = "N/A"
+        card_info = {
+            "Card Number": masked_card_number,
+            "Expiry Date": user.get("expiryDate", "N/A"),
+            "Status": user.get("status", "N/A"),
+            "Type": user.get("type", "N/A"),
+            "Product Type": user.get("productType", "N/A"),
+            "Currency": user.get("currency", "N/A"),
+            "Available Balance": user.get("availableBalance", "N/A"),
+            "Current Balance": user.get("currentBalance", "N/A"),
+            "Card Limit": user.get("cardLimit", "N/A"),
+            "Cashback Percentage": user.get("cashback", "N/A"),
+        }
+        cards.append(card_info)
 
-    card_info = {
-        "Card Number": user.get("cardNumber", "N/A"),
-        "Expiry Date": user.get("expiryDate", "N/A"),
-        "Status": user.get("status", "N/A"),
-        "Type": user.get("type", "N/A"),
-        "Product Type": user.get("productType", "N/A"),
-        "Currency": user.get("currency", "N/A"),
-        "Available Balance": user.get("availableBalance", "N/A"),
-        "Current Balance": user.get("currentBalance", "N/A"),
-        "Card Limit": user.get("cardLimit", "N/A"),
-        "Cashback Percentage": user.get("cashback", "N/A"),
-    }
-
-    details = "\n".join([f"{key}: {value}" for key, value in card_info.items()])
+    details = ""
+    for idx, card in enumerate(cards, start=1):
+        details += f"--- Card {idx} ---\n"
+        for key, value in card.items():
+            details += f"{key}: {value}\n"
+        details += "\n"
     return details
 
 view_card_details_tool = StructuredTool.from_function(
@@ -103,9 +127,10 @@ view_card_details_tool = StructuredTool.from_function(
 
 class ListRecentTransactionsInput(BaseModel):
     clientId: str = Field(..., description="Client ID to identify the user's card in the database.")
+    cardNumber: str = Field(..., description="The card number associated with the transactions.")
     count: int = Field(5, description="Number of recent transactions to retrieve.")
 
-def list_recent_transactions(clientId: str, count: int = 5) -> str:
+def list_recent_transactions(clientId: str, cardNumber: str, count: int = 5) -> str:
     """Retrieve and list recent transactions for a user from MongoDB."""
     mongo_uri = os.getenv("MONGO_URI")
     if not mongo_uri:
@@ -115,9 +140,17 @@ def list_recent_transactions(clientId: str, count: int = 5) -> str:
     db = client["fransa_demo"]
     cards = db["cards"]
 
-    user = cards.find_one({"clientId": clientId})
-    if not user:
-        return f"No card found for clientId {clientId}."
+    user_cards = list(cards.find({"clientId": clientId, "cardNumber": {"$exists": True}}))
+
+    if not user_cards:
+        return f"Either no client found with clientId {clientId} or no card associated."
+    elif len(user_cards) == 1:
+        user = user_cards[0]
+    else:
+        if cardNumber:
+            user = cards.find_one({"clientId": clientId, "cardNumber": cardNumber})
+            if not user:
+                return f"No card found for clientId {clientId} with cardNumber {cardNumber}."
 
     transactions = user.get("transactions", [])
     if not transactions:
@@ -149,10 +182,11 @@ list_recent_transactions_tool = StructuredTool.from_function(
 
 class ListTransactionsDateRangeInput(BaseModel):
     clientId: str = Field(..., description="Client ID to identify the user's card in the database.")
+    cardNumber: str = Field(..., description="The card number associated with the transactions.")
     start_date: str = Field(..., description="Start date in DDMMYYYY format.")
     end_date: str = Field(..., description="End date in DDMMYYYY format.")
 
-def list_transactions_date_range(clientId: str, start_date: str, end_date: str) -> str:
+def list_transactions_date_range(clientId: str, cardNumber: str, start_date: str, end_date: str) -> str:
     """Retrieve all transactions for a user within a given date range from MongoDB."""
     mongo_uri = os.getenv("MONGO_URI")
     if not mongo_uri:
@@ -162,9 +196,17 @@ def list_transactions_date_range(clientId: str, start_date: str, end_date: str) 
     db = client["fransa_demo"]
     cards = db["cards"]
 
-    user = cards.find_one({"clientId": clientId})
-    if not user:
-        return f"No card found for clientId {clientId}."
+    user_cards = list(cards.find({"clientId": clientId, "cardNumber": {"$exists": True}}))
+
+    if not user_cards:
+        return f"Either no client found with clientId {clientId} or no card associated."
+    elif len(user_cards) == 1:
+        user = user_cards[0]
+    else:
+        if cardNumber:
+            user = cards.find_one({"clientId": clientId, "cardNumber": cardNumber})
+            if not user:
+                return f"No card found for clientId {clientId} with cardNumber {cardNumber}."
 
     transactions = user.get("transactions", [])
     if not transactions:
@@ -200,4 +242,12 @@ list_transactions_date_range_tool = StructuredTool.from_function(
 )
 
 if __name__ == "__main__":
-    pass 
+    # Example usage
+    print("----- Change PIN Example -----")
+    print(change_pin("1001", "5007673290469960", "0000", "1234"))
+    print("\n----- View Card Details Example -----")
+    print(view_card_details("1001"))
+    print("\n----- List Recent Transactions Example -----")
+    print(list_recent_transactions("1001", "5007673290469960", 3))
+    print("\n----- List Transactions Date Range Example -----")
+    print(list_transactions_date_range("1001", "5007673290469960", "23102025", "23102025"))
