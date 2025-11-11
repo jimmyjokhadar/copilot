@@ -39,8 +39,6 @@ import re
 
 def banking_llm_agent(state: MessagesState) -> Dict[str, Any]:
     messages = state["messages"]
-    print(f"[DEBUG] banking_llm_agent received {messages}")
-
     # Try to extract Slack ID pattern like <@U09S9M6TA81>
     slack_id = None
     for m in messages:
@@ -60,14 +58,8 @@ def banking_llm_agent(state: MessagesState) -> Dict[str, Any]:
             user_doc = collection.find_one({"slack_id": slack_id})
             if user_doc and "clientId" in user_doc:
                 client_id = user_doc["clientId"]
-                print(f"[DEBUG] Retrieved clientId={client_id} for Slack user {slack_id}")
-            else:
-                print(f"[DEBUG] No matching clientId found for Slack ID {slack_id}")
-        else:
-            print("[DEBUG] No Slack ID mention found in message content")
     except Exception as e:
         print(f"[ERROR] Mongo lookup failed: {e}")
-
     print(f"[DEBUG] banking_llm_agent invoked for clientId={client_id}")
 
     if not any(
