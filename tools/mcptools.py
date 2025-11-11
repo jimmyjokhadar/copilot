@@ -81,16 +81,15 @@ def view_card_details(clientId: str) -> str:
     db = client["fransa_demo"]  # adjust DB name
     cards = db["cards"]  # adjust collection name
 
-    users = cards.find({"clientId": clientId})
-    print(f"[DEBUG] view_card_details fetched users: {list(users)}")
+    users = list(cards.find({"clientId": clientId}))
+    print(f"[DEBUG] view_card_details fetched users: {users}")
 
-    if len(list(users)) == 0:
+    if len(users) == 0:
         return f"No card found for clientId {clientId}."
     
     
     cards = []
     for user in users:
-        print(f"[DEBUG] Processing user: {user}")
         user_card_number = user.get("cardNumber", "N/A")
         if user_card_number != "N/A" and len(user_card_number) >= 4:
             masked_card_number = "**** **** **** " + user_card_number[-4:]
