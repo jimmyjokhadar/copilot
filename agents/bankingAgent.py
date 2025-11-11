@@ -6,6 +6,8 @@ from prompts.banking_prompt import banking_prompt
 from agents.intentAgent import create_intent_agent
 from dotenv import load_dotenv
 import os
+import re 
+import pymongo
 load_dotenv()
 
 from tools.mcptools import (
@@ -14,6 +16,11 @@ from tools.mcptools import (
     list_recent_transactions_tool,
     list_transactions_date_range_tool,
 )
+
+mongo_uri = os.getenv("MONGO_URI")
+mongoClient = pymongo.MongoClient(mongo_uri)
+database = mongoClient["fransa_demo"]
+collection = database["users"]
 
 # 1. Define tools
 TOOLS = [
@@ -28,97 +35,82 @@ LLM = ChatOllama(model=os.getenv("MODEL_NAME"), temperature=0).bind_tools(TOOLS)
 
 # 3. Create tool execution node
 tool_node = ToolNode(TOOLS)
+import re
+
 def banking_llm_agent(state: MessagesState) -> Dict[str, Any]:
-    """
-    Core node: takes messages and returns an AI message
-    that may include tool calls. Injects the system prompt
-    if not already present.
-    """
     messages = state["messages"]
-    print(messages)  # debug
+    print(f"[DEBUG] banking_llm_agent received {messages}")
 
-    def get_role(m):
-        # Handle LangChain message objects (HumanMessage, SystemMessage, etc.)
-        if hasattr(m, "type"):
-            # LangChain uses .type not .role
-            if m.type == "human":
-                return "user"
-            elif m.type == "ai":
-                return "assistant"
-            elif m.type == "system":
-                return "system"
-            return m.type
-        # Handle plain dicts
-        return m.get("role") if isinstance(m, dict) else None
-
-    def get_content(m):
+    # Try to extract Slack ID pattern like <@U09S9M6TA81>
+    slack_id = None
+    for m in messages:
         if hasattr(m, "content"):
-            return m.content
-        if isinstance(m, dict):
-            return m.get("content")
-        return None
+            match = re.search(r"<@([A-Z0-9]+)>", m.content)
+        elif isinstance(m, dict) and "content" in m:
+            match = re.search(r"<@([A-Z0-9]+)>", m["content"])
+        else:
+            match = None
+        if match:
+            slack_id = match.group(1)
+            break
+    print(f"[DEBUG] Extracted slack_id: {slack_id}")
+    client_id = None
+    try:
+        if slack_id:
+            user_doc = collection.find_one({"slack_id": slack_id})
+            if user_doc and "clientId" in user_doc:
+                client_id = user_doc["clientId"]
+                print(f"[DEBUG] Retrieved clientId={client_id} for Slack user {slack_id}")
+            else:
+                print(f"[DEBUG] No matching clientId found for Slack ID {slack_id}")
+        else:
+            print("[DEBUG] No Slack ID mention found in message content")
+    except Exception as e:
+        print(f"[ERROR] Mongo lookup failed: {e}")
 
-    # Inject system prompt if missing
-    if not any(get_role(m) == "system" for m in messages):
-        user_msg = next((m for m in messages if get_role(m) == "user"), None)
-        if user_msg:
-            system_msg = {
-                "role": "system",
-                "content": banking_prompt()
-            }
-            messages = [system_msg] + messages
+    print(f"[DEBUG] banking_llm_agent invoked for clientId={client_id}")
+
+    if not any(
+        (hasattr(m, "type") and m.type == "system")
+        or (isinstance(m, dict) and m.get("role") == "system")
+        for m in messages
+    ):
+        system_msg = {
+            "role": "system",
+            "content": banking_prompt(client_id)
+        }
+        messages = [system_msg] + messages
 
     ai_msg = LLM.invoke(messages)
     return {"messages": messages + [ai_msg]}
 
 # 4. Router function to decide if we should use tools or end
 def should_continue(state: MessagesState) -> str:
-    """
-    Determines whether to continue to tool execution or end.
-    """
     messages = state["messages"]
     last_message = messages[-1]
-    
-    # If the last message has tool calls, route to tools
     if hasattr(last_message, "tool_calls") and last_message.tool_calls:
         return "tools"
-    # Otherwise, end the conversation
     return "end"
 
 # 5. Build graph
 def create_banking_agent():
     builder = StateGraph(MessagesState)
-    
-    # Add nodes
     builder.add_node("card_llm_agent", banking_llm_agent)
     builder.add_node("tools", tool_node)
-    
-    # Add edges
     builder.add_edge(START, "card_llm_agent")
-    
-    # Add conditional edge from agent
     builder.add_conditional_edges(
         "card_llm_agent",
         should_continue,
-        {
-            "tools": "tools",
-            "end": END
-        }
+        {"tools": "tools", "end": END}
     )
-    
-    # After tools are executed, go back to the agent
     builder.add_edge("tools", "card_llm_agent")
-    
     return builder.compile()
-
 
 # 6. Run agent
 if __name__ == "__main__":
     agent = create_banking_agent()
     user_message = {"role": "user", "content": "Show my last 3 transactions."}
     result = agent.invoke({"messages": [user_message]})
-    
-    # Print the final response
     print("\n=== Final Response ===")
     final_message = result["messages"][-1]
     print(final_message.content if hasattr(final_message, "content") else final_message)

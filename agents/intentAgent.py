@@ -3,110 +3,131 @@ from langgraph.graph import StateGraph, START, END
 from langchain_ollama import ChatOllama
 from prompts.intent_prompt import intent_prompt
 from dotenv import load_dotenv
-import os 
+import os
+import re
+import pymongo
+
 load_dotenv()
 
+# === Mongo Setup ===
+mongo_uri = os.getenv("MONGO_URI")
+mongoClient = pymongo.MongoClient(mongo_uri)
+database = mongoClient["fransa_demo"]
+collection = database["users"]
+
+# === State Definition ===
 class IntentState(TypedDict):
     user_input: str
     intent: str | None
     result: Dict[str, Any] | None
-    conversation_history: List[Dict[str, str]]  # Store conversation context
+    conversation_history: List[Dict[str, str]]
+    clientId: str | None  # Track clientId across nodes
+def extract_client_id(user_input: str) -> str | None:
+    """Extract Slack user ID from message (ignore bot mentions)."""
+    from os import getenv
+    bot_id = getenv("SLACK_BOT_USER_ID")  # make sure this is set in .env
 
-# Initialize LLM for intent detection
+    matches = re.findall(r"<@([A-Z0-9]+)>", user_input)
+    if not matches:
+        return None
+
+    # pick the first ID that is NOT the bot's own ID
+    user_slack_id = next((uid for uid in matches if uid != bot_id), None)
+    if not user_slack_id:
+        print("[DEBUG] Only bot ID found in message; ignoring.")
+        return None
+
+    user_doc = collection.find_one({"slack_id": user_slack_id})
+    if user_doc and "clientId" in user_doc:
+        print(f"[DEBUG] Slack user {user_slack_id} → clientId {user_doc['clientId']}")
+        return user_doc["clientId"]
+
+    print(f"[DEBUG] No clientId found for Slack user {user_slack_id}")
+    return None
+
+# === Initialize LLM ===
 llm = ChatOllama(model=os.getenv("MODEL_NAME"), temperature=0)
 
+# === Intent Detector Node ===
 def intent_detector(state: IntentState) -> IntentState:
     user_input = state["user_input"]
     conversation_history = state.get("conversation_history", [])
-    
-    # If there's conversation history, check if we're in a banking context
+    client_id = extract_client_id(user_input) or state.get("clientId")
+
+    # Detect whether we’re in a banking context
     in_banking_context = False
-    if conversation_history:
-        # Check if the last assistant message was from banking (asking for info, etc.)
-        for msg in reversed(conversation_history):
-            if msg.get("role") == "assistant":
-                # If assistant was asking for card number or other banking info, we're in banking context
-                content_lower = msg.get("content", "").lower()
-                if any(keyword in content_lower for keyword in ["card", "pin", "transaction", "balance", "which card", "provide"]):
-                    in_banking_context = True
-                break
-    
-    # If in banking context and user input looks like a card number or simple response, treat as banking
-    if in_banking_context:
-        # Check if input is numeric (card number) or a simple continuation
-        if user_input.replace(" ", "").isdigit() or len(user_input.split()) <= 3:
-            intent = "customer_request"
-        else:
-            # Still use LLM for complex inputs
-            prompt = intent_prompt(user_input)
-            response = llm.invoke(prompt)
-            intent = response.content.strip().lower()
+    for msg in reversed(conversation_history):
+        if msg.get("role") == "assistant":
+            content_lower = msg.get("content", "").lower()
+            if any(word in content_lower for word in ["card", "pin", "transaction", "balance", "which card", "provide"]):
+                in_banking_context = True
+            break
+
+    # Intent classification
+    if in_banking_context and (user_input.replace(" ", "").isdigit() or len(user_input.split()) <= 3):
+        intent = "customer_request"
     else:
-        # No banking context, use LLM to detect intent
-        prompt = intent_prompt(user_input)
+        prompt = intent_prompt(user_input, client_id)
         response = llm.invoke(prompt)
         intent = response.content.strip().lower()
-    
+
     return {
-        "user_input": user_input, 
+        "user_input": user_input,
         "intent": intent,
-        "conversation_history": conversation_history
+        "result": None,
+        "conversation_history": conversation_history,
+        "clientId": client_id,
     }
 
+# === Banking Node ===
 def banking_node(state: IntentState) -> IntentState:
-    # Lazy import to avoid circular dependency
     from agents.bankingAgent import create_banking_agent
 
     banking_agent = create_banking_agent()
-    
-    # Build messages from conversation history
+    client_id = state.get("clientId")
     conversation_history = state.get("conversation_history", [])
-    messages = []
-    
-    # Add previous conversation turns
-    for msg in conversation_history:
-        messages.append(msg)
-    
-    # Add current user message
-    user_message = {"role": "user", "content": state["user_input"]}
-    messages.append(user_message)
-    
-    # Invoke the banking agent with full conversation history
-    result = banking_agent.invoke({"messages": messages})
 
+    # Add message with clientId included
+    user_message = {"role": "user", "content": f"[clientId={client_id}] {state['user_input']}"}
+    messages = conversation_history + [user_message]
+
+    # Invoke banking agent
+    result = banking_agent.invoke({"messages": messages})
     final_message = result["messages"][-1]
     content = getattr(final_message, "content", str(final_message))
-    
-    # Update conversation history with the new exchange
+
     updated_history = conversation_history + [
         user_message,
-        {"role": "assistant", "content": content}
+        {"role": "assistant", "content": content},
     ]
-    
+
     return {
-        "user_input": state["user_input"], 
-        "intent": state["intent"], 
+        "user_input": state["user_input"],
+        "intent": state["intent"],
         "result": {"type": "banking_response", "content": content},
-        "conversation_history": updated_history
+        "conversation_history": updated_history,
+        "clientId": client_id,
     }
 
+# === Fallback Node ===
 def fallback_node(state: IntentState) -> IntentState:
     conversation_history = state.get("conversation_history", [])
     fallback_msg = "I'm sorry, I can only assist with banking-related queries."
-    
-    # Update conversation history
+
     updated_history = conversation_history + [
         {"role": "user", "content": state["user_input"]},
-        {"role": "assistant", "content": fallback_msg}
+        {"role": "assistant", "content": fallback_msg},
     ]
-    
+
     return {
         "user_input": state["user_input"],
         "intent": state["intent"],
         "result": {"type": "fallback_response", "content": fallback_msg},
-        "conversation_history": updated_history
+        "conversation_history": updated_history,
+        "clientId": state.get("clientId"),
     }
 
+# === Router ===
 def route_by_intent(state: IntentState) -> str:
     intent = state["intent"]
     if intent == "customer_request":
@@ -117,23 +138,21 @@ def route_by_intent(state: IntentState) -> str:
 
 def create_intent_agent():
     builder = StateGraph(IntentState)
-
     builder.add_node("intent_detector", intent_detector)
     builder.add_node("banking_node", banking_node)
     builder.add_node("fallback_node", fallback_node)
-
     builder.add_edge(START, "intent_detector")
     builder.add_conditional_edges("intent_detector", route_by_intent)
     builder.add_edge("banking_node", END)
     builder.add_edge("fallback_node", END)
-
     return builder.compile()
 
+# === Test Run ===
 if __name__ == "__main__":
-    # For testing purposes - use main.py for interactive mode
     agent = create_intent_agent()
-    user_input = "Show my transactions on 05-11-2025, client id 1003."
+    user_input = "<@U09S9M6TA81> Show my transactions on 05-11-2025."
     result = agent.invoke({"user_input": user_input})
     print("\n=== Final Output ===")
     print("Detected Intent:", result["intent"])
+    print("Client ID:", result["clientId"])
     print("Response:", result["result"]["content"])
