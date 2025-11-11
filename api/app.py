@@ -112,7 +112,6 @@ def send_message_to_slack(channel: str, text: str):
     }
     payload = {"channel": channel, "text": text}
     requests.post("https://slack.com/api/chat.postMessage", headers=headers, json=payload)
-
 @app.post("/slack/events")
 async def slack_events(request: Request):
     # Handle Slack retries
@@ -126,7 +125,7 @@ async def slack_events(request: Request):
     print(f"\n[DEBUG] Incoming Slack event at {datetime.now()}")
     print(f"[DEBUG] Payload type: {data.get('type')}")
 
-    # URL verification handshake
+    # URL verification
     if data.get("type") == "url_verification":
         print("[DEBUG] URL verification challenge received.")
         return {"challenge": data["challenge"]}
@@ -136,18 +135,29 @@ async def slack_events(request: Request):
         event = data.get("event", {})
         print(f"[DEBUG] Slack event received: {event.get('type')} | Subtype: {event.get('subtype')}")
 
-        # Ignore bot messages and system noise
-        if event.get("subtype") == "bot_message" or not event.get("user"):
-            print("[DEBUG] Ignored event (bot message or missing user).")
+        # Ignore missing users or system noise
+        if not event.get("user"):
+            print("[DEBUG] Ignored event (no user field).")
             return {"ok": True}
 
         user_id = event["user"]
         channel = event["channel"]
         text = (event.get("text") or "").strip()
 
+        # --- Ignore bot's own messages (DM loops fix) ---
+        bot_user_id = os.getenv("SLACK_BOT_USER_ID")
+        if user_id == bot_user_id:
+            print(f"[DEBUG] Ignoring message from bot itself ({bot_user_id})")
+            return {"ok": True}
+
+        # Ignore other bot/system messages
+        if event.get("subtype") == "bot_message":
+            print("[DEBUG] Ignored bot_message subtype.")
+            return {"ok": True}
+
         print(f"[DEBUG] Raw user message from {user_id} in channel {channel}: '{text}'")
 
-        # Detect and handle voice / audio files
+        # Handle file attachments (audio transcription etc.)
         voice_transcript = None
         files = event.get("files") or []
         audio_path = None
@@ -157,62 +167,42 @@ async def slack_events(request: Request):
         for f in files:
             if not is_audio_file(f):
                 continue
-
-            print(
-                f"[DEBUG] Audio file detected: id={f.get('id')} "
-                f"mimetype={f.get('mimetype')} filetype={f.get('filetype')}"
-            )
+            print(f"[DEBUG] Audio file detected: {f.get('id')} {f.get('filetype')}")
             try:
                 audio_path = download_slack_file(f)
                 voice_transcript = transcribe_audio_file(audio_path)
             except Exception as e:
-                print(f"[ERROR] Failed to download/transcribe audio file {f.get('id')}: {e}")
-                voice_transcript = None
+                print(f"[ERROR] Failed to process audio file: {e}")
             finally:
                 if audio_path and os.path.exists(audio_path):
-                    try:
-                        os.remove(audio_path)
-                        print(f"[DEBUG] Deleted temp audio file {audio_path}")
-                    except Exception as cleanup_err:
-                        print(f"[WARN] Failed to delete temp file {audio_path}: {cleanup_err}")
-            # Only handle first audio file
+                    os.remove(audio_path)
             break
 
-        # Build final user_input for agent
-        if voice_transcript:
-            if text:
-                agent_input = (
-                    f"{text}\n\n[Voice message transcript]: {voice_transcript}"
-                )
-            else:
-                agent_input = voice_transcript
-            print(f"[DEBUG] Using transcribed voice message as user_input.")
-        else:
-            agent_input = text
+        # Final message content
+        agent_input = (
+            f"{text}\n\n[Voice message transcript]: {voice_transcript}"
+            if voice_transcript and text
+            else (voice_transcript or text)
+        )
 
         print(f"[DEBUG] User input to agent: '{agent_input[:120]}...'")
 
-        # Lookup Mongo user linked to this Slack ID
+        # Mongo lookup
         user_doc = users_col.find_one({"slack_id": user_id})
         if not user_doc:
             print(f"[DEBUG] Unregistered Slack user {user_id}. Rejecting message.")
-            send_message_to_slack(
-                channel,
-                "❌ Unregistered user. Please register your Slack account."
-            )
+            send_message_to_slack(channel, "❌ Unregistered user. Please register your Slack account.")
             return {"ok": False}
 
         client_id = user_doc.get("clientId")
         auth_token = user_doc.get("authToken")
-
         print(f"[DEBUG] Authenticated Slack user {user_id} → Mongo clientId {client_id}")
 
-        # Maintain per-user chat session
+        # Maintain session
         session_id = f"slack_{user_id}"
         chat_sessions.setdefault(session_id, [])
         print(f"[DEBUG] Session loaded: {session_id} | {len(chat_sessions[session_id])} previous messages")
 
-        # Process message through the intent agent
         try:
             print("[DEBUG] Invoking intent agent...")
             result = intent_agent.invoke({
@@ -225,14 +215,12 @@ async def slack_events(request: Request):
 
             response_text = result.get("result", {}).get("content", "No response")
             chat_sessions[session_id] = result.get("conversation_history", [])
-            print(f"[DEBUG] Response ready: {response_text[:80]}...")  # truncate to 80 chars
-
+            print(f"[DEBUG] Response ready: {response_text[:80]}...")
         except Exception as e:
             print(f"[ERROR] Slack event processing failed: {e}")
             send_message_to_slack(channel, f"⚠️ Error: {str(e)}")
             return {"ok": False}
 
-        # Send reply to Slack
         print(f"[DEBUG] Sending reply back to Slack channel {channel}")
         send_message_to_slack(channel, response_text)
 

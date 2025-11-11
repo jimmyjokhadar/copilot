@@ -72,6 +72,7 @@ def banking_llm_agent(state: MessagesState) -> Dict[str, Any]:
             "content": banking_prompt(client_id)
         }
         messages = [system_msg] + messages
+        print(f"[DEBUG] System Prompt: {system_msg['content']}")
 
     ai_msg = LLM.invoke(messages)
     return {"messages": messages + [ai_msg]}
