@@ -7,18 +7,50 @@ import os
 from pprint import pprint
 import bcrypt
 from datetime import datetime
+from contextvars import ContextVar
 load_dotenv()
+
+# Thread-safe context variable to store authenticated clientId
+_authenticated_client_id: ContextVar[str | None] = ContextVar('authenticated_client_id', default=None)
+
+def set_authenticated_client_id(client_id: str | None):
+    """Set the authenticated client ID for the current context."""
+    _authenticated_client_id.set(client_id)
+
+def get_authenticated_client_id() -> str | None:
+    """Get the authenticated client ID for the current context."""
+    return _authenticated_client_id.get()
+
+def verify_client_access(requested_client_id: str | None = None) -> tuple[bool, str, str | None]:
+    """
+    Verify that the user has access to the requested client ID.
+    Returns: (is_authorized, error_message, authenticated_client_id)
+    """
+    authenticated_id = get_authenticated_client_id()
+    
+    if not authenticated_id:
+        return False, "❌ Authentication required. Please authenticate via Slack.", None
+    
+    # If a clientId is explicitly requested, verify it matches the authenticated user
+    if requested_client_id and requested_client_id != authenticated_id:
+        return False, f"❌ Access denied. You are not authorized to access client ID {requested_client_id}.", authenticated_id
+    
+    return True, "", authenticated_id
 
 ###### Change PIN Tool ######
 
 class ChangePINInput(BaseModel):
-    clientId: str = Field(..., description="Client ID to identify the user in the database.")
     cardNumber: str = Field(..., description="The card number associated with the PIN.")
     old_pin: str = Field(..., description="The current PIN code.")
     new_pin: str = Field(..., description="The new PIN code to set.")
 
-def change_pin(clientId: str, cardNumber: str, old_pin: str, new_pin: str) -> str:
+def change_pin(cardNumber: str, old_pin: str, new_pin: str) -> str:
     """Change a user's PIN stored in MongoDB after verifying the old PIN."""
+    # Security check
+    is_authorized, error_msg, clientId = verify_client_access()
+    if not is_authorized:
+        return error_msg
+    
     mongo_uri = os.getenv("MONGO_URI")
     if not mongo_uri:
         return "MONGO_URI not set in environment."
@@ -61,7 +93,7 @@ def change_pin(clientId: str, cardNumber: str, old_pin: str, new_pin: str) -> st
 change_pin_tool = StructuredTool.from_function(
     func=change_pin,
     name="change_pin",
-    description="Changes the user's PIN in MongoDB after verifying the old PIN.",
+    description="Changes the authenticated user's PIN in MongoDB after verifying the old PIN. Uses the authenticated client ID from Slack.",
     args_schema=ChangePINInput
 )
 
@@ -69,10 +101,15 @@ change_pin_tool = StructuredTool.from_function(
 #__________________________________#
 
 class ViewCardDetailsInput(BaseModel):
-    clientId: str = Field(..., description="Client ID to identify the user's card in the database.")
+    pass  # No parameters needed - uses authenticated client ID
 
-def view_card_details(clientId: str) -> str:
-    """Fetch and display card details for a given clientId from MongoDB."""
+def view_card_details() -> str:
+    """Fetch and display card details for the authenticated user from MongoDB."""
+    # Security check
+    is_authorized, error_msg, clientId = verify_client_access()
+    if not is_authorized:
+        return error_msg
+    
     mongo_uri = os.getenv("MONGO_URI")
     if not mongo_uri:
         return "MONGO_URI not set in environment."
@@ -120,19 +157,23 @@ def view_card_details(clientId: str) -> str:
 view_card_details_tool = StructuredTool.from_function(
     func=view_card_details,
     name="view_card_details",
-    description="Retrieves and displays the user's card details from MongoDB.",
+    description="Retrieves and displays the authenticated user's card details from MongoDB. Uses the authenticated client ID from Slack.",
     args_schema=ViewCardDetailsInput
 )
 ###### List Recent Transactions Tool ######
 #_________________________________________#
 
 class ListRecentTransactionsInput(BaseModel):
-    clientId: str = Field(..., description="Client ID to identify the user's card in the database.")
     cardNumber: str = Field(..., description="The card number associated with the transactions.")
     count: int = Field(5, description="Number of recent transactions to retrieve.")
 
-def list_recent_transactions(clientId: str, cardNumber: str, count: int = 5) -> str:
-    """Retrieve and list recent transactions for a user from MongoDB."""
+def list_recent_transactions(cardNumber: str, count: int = 5) -> str:
+    """Retrieve and list recent transactions for the authenticated user from MongoDB."""
+    # Security check
+    is_authorized, error_msg, clientId = verify_client_access()
+    if not is_authorized:
+        return error_msg
+    
     mongo_uri = os.getenv("MONGO_URI")
     if not mongo_uri:
         return "MONGO_URI not set in environment."
@@ -175,20 +216,24 @@ Reference Number: {txn.get('referenceNumber', 'N/A')}
 list_recent_transactions_tool = StructuredTool.from_function(
     func=list_recent_transactions,
     name="list_recent_transactions",
-    description="Lists recent transactions for a user fetched from MongoDB (fransa_demo.cards).",
+    description="Lists recent transactions for the authenticated user fetched from MongoDB (fransa_demo.cards). Uses the authenticated client ID from Slack.",
     args_schema=ListRecentTransactionsInput
 )
 
 ###### List Transactions Per Date Range Tool ######
 
 class ListTransactionsDateRangeInput(BaseModel):
-    clientId: str = Field(..., description="Client ID to identify the user's card in the database.")
     cardNumber: str = Field(..., description="The card number associated with the transactions.")
     start_date: str = Field(..., description="Start date in DDMMYYYY format.")
     end_date: str = Field(..., description="End date in DDMMYYYY format.")
 
-def list_transactions_date_range(clientId: str, cardNumber: str, start_date: str, end_date: str) -> str:
-    """Retrieve all transactions for a user within a given date range from MongoDB."""
+def list_transactions_date_range(cardNumber: str, start_date: str, end_date: str) -> str:
+    """Retrieve all transactions for the authenticated user within a given date range from MongoDB."""
+    # Security check
+    is_authorized, error_msg, clientId = verify_client_access()
+    if not is_authorized:
+        return error_msg
+    
     mongo_uri = os.getenv("MONGO_URI")
     if not mongo_uri:
         return "MONGO_URI not set in environment."
@@ -238,17 +283,19 @@ Reference Number: {txn.get('referenceNumber', 'N/A')}
 list_transactions_date_range_tool = StructuredTool.from_function(
     func=list_transactions_date_range,
     name="list_transactions_date_range",
-    description="Lists all transactions for a user within a given date range from MongoDB (fransa_demo.cards).",
+    description="Lists all transactions for the authenticated user within a given date range from MongoDB (fransa_demo.cards). Uses the authenticated client ID from Slack.",
     args_schema=ListTransactionsDateRangeInput
 )
 
 if __name__ == "__main__":
-    # Example usage
+    # Example usage - must set authenticated client ID first
+    print("----- Setting authenticated client ID -----")
+    set_authenticated_client_id("1001")
     print("----- Change PIN Example -----")
-    print(change_pin("1001", "5007673290469960", "0000", "1234"))
+    print(change_pin("5007673290469960", "0000", "1234"))
     print("\n----- View Card Details Example -----")
-    print(view_card_details("1001"))
+    print(view_card_details())
     print("\n----- List Recent Transactions Example -----")
-    print(list_recent_transactions("1001", "5007673290469960", 3))
+    print(list_recent_transactions("5007673290469960", 3))
     print("\n----- List Transactions Date Range Example -----")
-    print(list_transactions_date_range("1001", "5007673290469960", "23102025", "23102025"))
+    print(list_transactions_date_range("5007673290469960", "23102025", "23102025"))

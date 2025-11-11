@@ -15,6 +15,7 @@ from tools.mcptools import (
     view_card_details_tool,
     list_recent_transactions_tool,
     list_transactions_date_range_tool,
+    set_authenticated_client_id,
 )
 
 mongo_uri = os.getenv("MONGO_URI")
@@ -60,7 +61,10 @@ def banking_llm_agent(state: MessagesState) -> Dict[str, Any]:
                 client_id = user_doc["clientId"]
     except Exception as e:
         print(f"[ERROR] Mongo lookup failed: {e}")
-    print(f"[DEBUG] banking_llm_agent invoked for clientId={client_id}")
+    
+    # Set the authenticated client ID in the context for all tool calls
+    set_authenticated_client_id(client_id)
+    print(f"[DEBUG] banking_llm_agent invoked for authenticated clientId={client_id}")
 
     if not any(
         (hasattr(m, "type") and m.type == "system")
