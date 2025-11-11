@@ -10,15 +10,13 @@ from datetime import datetime
 load_dotenv()
 
 ###### Change PIN Tool ######
-#___________________________#
 
 class ChangePINInput(BaseModel):
     clientId: str = Field(..., description="Client ID to identify the user in the database.")
-    cardNumber: str = Field(..., description="Card number associated with the PIN to change.")
     old_pin: str = Field(..., description="The current PIN code.")
     new_pin: str = Field(..., description="The new PIN code to set.")
 
-def change_pin(clientId: str, cardNumber: str, old_pin: str, new_pin: str) -> str:
+def change_pin(clientId: str, old_pin: str, new_pin: str) -> str:
     """Change a user's PIN stored in MongoDB after verifying the old PIN."""
     mongo_uri = os.getenv("MONGO_URI")
     if not mongo_uri:
@@ -63,9 +61,8 @@ change_pin_tool = StructuredTool.from_function(
 
 class ViewCardDetailsInput(BaseModel):
     clientId: str = Field(..., description="Client ID to identify the user's card in the database.")
-    cardNumber: str = Field(..., description="Card number associated with the card details to retrieve.")
 
-def view_card_details(clientId: str, cardNumber: str) -> str:
+def view_card_details(clientId: str) -> str:
     """Fetch and display card details for a given clientId from MongoDB."""
     mongo_uri = os.getenv("MONGO_URI")
     if not mongo_uri:
@@ -106,10 +103,9 @@ view_card_details_tool = StructuredTool.from_function(
 
 class ListRecentTransactionsInput(BaseModel):
     clientId: str = Field(..., description="Client ID to identify the user's card in the database.")
-    cardNumber: str = Field(..., description="Card number associated with the transactions.")
     count: int = Field(5, description="Number of recent transactions to retrieve.")
 
-def list_recent_transactions(clientId: str, cardNumber: str, count: int = 5) -> str:
+def list_recent_transactions(clientId: str, count: int = 5) -> str:
     """Retrieve and list recent transactions for a user from MongoDB."""
     mongo_uri = os.getenv("MONGO_URI")
     if not mongo_uri:
@@ -153,11 +149,10 @@ list_recent_transactions_tool = StructuredTool.from_function(
 
 class ListTransactionsDateRangeInput(BaseModel):
     clientId: str = Field(..., description="Client ID to identify the user's card in the database.")
-    cardNumber: str = Field(..., description="Card number associated with the transactions.")
     start_date: str = Field(..., description="Start date in DDMMYYYY format.")
     end_date: str = Field(..., description="End date in DDMMYYYY format.")
 
-def list_transactions_date_range(clientId: str, cardNumber: str, start_date: str, end_date: str) -> str:
+def list_transactions_date_range(clientId: str, start_date: str, end_date: str) -> str:
     """Retrieve all transactions for a user within a given date range from MongoDB."""
     mongo_uri = os.getenv("MONGO_URI")
     if not mongo_uri:
@@ -167,7 +162,7 @@ def list_transactions_date_range(clientId: str, cardNumber: str, start_date: str
     db = client["fransa_demo"]
     cards = db["cards"]
 
-    user = cards.find_one({"clientId": clientId, "cardNumber": cardNumber})
+    user = cards.find_one({"clientId": clientId})
     if not user:
         return f"No card found for clientId {clientId}."
 
