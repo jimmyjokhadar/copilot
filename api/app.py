@@ -219,7 +219,7 @@ async def slack_events(request: Request):
                 "user_input": agent_input,
                 "conversation_history": chat_sessions[session_id],
                 "clientId": client_id,
-                "authToken": auth_token
+                "slack_user_id": user_id
             })
             print("[DEBUG] Intent agent returned successfully.")
 
@@ -250,7 +250,6 @@ async def chat(chat_message: ChatMessage):
             "user_input": chat_message.message,
             "conversation_history": conversation_history,
             "clientId": chat_message.clientId,
-            "authToken": chat_message.authToken
         })
 
         updated_history = result.get("conversation_history", [])
