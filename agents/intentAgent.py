@@ -4,7 +4,6 @@ from langchain_ollama import ChatOllama
 from prompts.intent_prompt import intent_prompt
 from dotenv import load_dotenv
 import os
-import re
 import pymongo
 
 load_dotenv()
@@ -21,28 +20,22 @@ class IntentState(TypedDict):
     intent: str | None
     result: Dict[str, Any] | None
     conversation_history: List[Dict[str, str]]
-    clientId: str | None  # Track clientId across nodes
-def extract_client_id(user_input: str) -> str | None:
-    """Extract Slack user ID from message (ignore bot mentions)."""
-    from os import getenv
-    bot_id = getenv("SLACK_BOT_USER_ID")  # make sure this is set in .env
+    clientId: str | None
+    slack_user_id: str | None  # add actual Slack user
 
-    matches = re.findall(r"<@([A-Z0-9]+)>", user_input)
-    if not matches:
+# === Extractor ===
+def get_client_id_from_slack_user(slack_user_id: str | None) -> str | None:
+    """Lookup clientId directly from MongoDB via Slack user ID."""
+    if not slack_user_id:
+        print("[DEBUG] No Slack user ID provided to lookup.")
         return None
 
-    # pick the first ID that is NOT the bot's own ID
-    user_slack_id = next((uid for uid in matches if uid != bot_id), None)
-    if not user_slack_id:
-        print("[DEBUG] Only bot ID found in message; ignoring.")
-        return None
-
-    user_doc = collection.find_one({"slack_id": user_slack_id})
+    user_doc = collection.find_one({"slack_id": slack_user_id})
     if user_doc and "clientId" in user_doc:
-        print(f"[DEBUG] Slack user {user_slack_id} → clientId {user_doc['clientId']}")
+        print(f"[DEBUG] Slack user {slack_user_id} → clientId {user_doc['clientId']}")
         return user_doc["clientId"]
 
-    print(f"[DEBUG] No clientId found for Slack user {user_slack_id}")
+    print(f"[DEBUG] No clientId found for Slack user {slack_user_id}")
     return None
 
 # === Initialize LLM ===
@@ -52,7 +45,10 @@ llm = ChatOllama(model=os.getenv("MODEL_NAME"), temperature=0)
 def intent_detector(state: IntentState) -> IntentState:
     user_input = state["user_input"]
     conversation_history = state.get("conversation_history", [])
-    client_id = extract_client_id(user_input) or state.get("clientId")
+    slack_user_id = state.get("slack_user_id")
+
+    # Get clientId from slack_user_id or fallback
+    client_id = state.get("clientId") or get_client_id_from_slack_user(slack_user_id)
 
     # Detect whether we’re in a banking context
     in_banking_context = False
@@ -77,6 +73,7 @@ def intent_detector(state: IntentState) -> IntentState:
         "result": None,
         "conversation_history": conversation_history,
         "clientId": client_id,
+        "slack_user_id": slack_user_id,
     }
 
 # === Banking Node ===
@@ -107,6 +104,7 @@ def banking_node(state: IntentState) -> IntentState:
         "result": {"type": "banking_response", "content": content},
         "conversation_history": updated_history,
         "clientId": client_id,
+        "slack_user_id": state.get("slack_user_id"),
     }
 
 # === Fallback Node ===
@@ -125,6 +123,7 @@ def fallback_node(state: IntentState) -> IntentState:
         "result": {"type": "fallback_response", "content": fallback_msg},
         "conversation_history": updated_history,
         "clientId": state.get("clientId"),
+        "slack_user_id": state.get("slack_user_id"),
     }
 
 # === Router ===
@@ -150,8 +149,12 @@ def create_intent_agent():
 # === Test Run ===
 if __name__ == "__main__":
     agent = create_intent_agent()
-    user_input = "<@U09S9M6TA81> Show my transactions on 05-11-2025."
-    result = agent.invoke({"user_input": user_input})
+    # simulate Slack event (sender vs. mention)
+    test_state = {
+        "user_input": "<@U09S9M6TA81> Show my transactions.",
+        "slack_user_id": "U09SRT9331N",  # real sender
+    }
+    result = agent.invoke(test_state)
     print("\n=== Final Output ===")
     print("Detected Intent:", result["intent"])
     print("Client ID:", result["clientId"])

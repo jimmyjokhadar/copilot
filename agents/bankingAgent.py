@@ -53,7 +53,7 @@ def banking_llm_agent(state: MessagesState) -> Dict[str, Any]:
         if match:
             slack_id = match.group(1)
             break
-    print(f"[DEBUG] Extracted slack_id: {slack_id}")
+
     client_id = None
     try:
         if slack_id:

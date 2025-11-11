@@ -6,8 +6,11 @@ from dotenv import load_dotenv
 from pymongo import MongoClient
 import requests
 import os
+import tempfile
 from datetime import datetime
+
 from agents.intentAgent import create_intent_agent
+from faster_whisper import WhisperModel  # open-source STT
 
 load_dotenv()
 
@@ -20,6 +23,58 @@ if not MONGO_URI or not SLACK_BOT_TOKEN:
 client = MongoClient(MONGO_URI)
 db = client["fransa_demo"]
 users_col = db["users"]
+
+# === Open-source Speech-to-Text model (faster-whisper) ===
+# You can switch "small" -> "tiny" if you want it lighter / faster.
+stt_model = WhisperModel(
+    "small",
+    device="cpu",        # or "cuda" if you have GPU
+    compute_type="int8",  # good tradeoff for CPU
+)
+
+AUDIO_FILETYPES = {"mp3", "m4a", "wav", "ogg", "webm", "mp4"}
+
+def is_audio_file(file_obj: Dict) -> bool:
+    mimetype = (file_obj.get("mimetype") or "").lower()
+    filetype = (file_obj.get("filetype") or "").lower()
+    if mimetype.startswith("audio/"):
+        return True
+    if filetype in AUDIO_FILETYPES:
+        return True
+    return False
+
+def download_slack_file(file_obj: Dict) -> str:
+    """
+    Download a Slack file to a temporary path and return the path.
+    Requires files:read scope and a valid bot token.
+    """
+    url = file_obj.get("url_private_download") or file_obj.get("url_private")
+    if not url:
+        raise ValueError("Slack file has no downloadable URL")
+
+    headers = {"Authorization": f"Bearer {SLACK_BOT_TOKEN}"}
+    resp = requests.get(url, headers=headers)
+    resp.raise_for_status()
+
+    suffix = "." + (file_obj.get("filetype") or "bin")
+    fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+    with os.fdopen(fd, "wb") as f:
+        f.write(resp.content)
+
+    return tmp_path
+
+def transcribe_audio_file(path: str) -> str:
+    """
+    Transcribe an audio file using faster-whisper and return the text.
+    """
+    print(f"[DEBUG] Transcribing audio file at {path}")
+    segments, info = stt_model.transcribe(path, beam_size=5)
+    text_parts = []
+    for seg in segments:
+        text_parts.append(seg.text)
+    transcript = " ".join(text_parts).strip()
+    print(f"[DEBUG] Transcription result: {transcript[:120]}...")
+    return transcript or "[unintelligible voice message]"
 
 app = FastAPI(title="Banking Assistant API")
 
@@ -40,13 +95,11 @@ class ChatMessage(BaseModel):
     clientId: Optional[str] = None
     authToken: Optional[str] = None
 
-
 class ChatResponse(BaseModel):
     response: str
     intent: str
     session_id: str
     conversation_history: List[Dict[str, str]]
-
 
 class SessionResponse(BaseModel):
     session_id: str
@@ -59,6 +112,7 @@ def send_message_to_slack(channel: str, text: str):
     }
     payload = {"channel": channel, "text": text}
     requests.post("https://slack.com/api/chat.postMessage", headers=headers, json=payload)
+
 @app.post("/slack/events")
 async def slack_events(request: Request):
     # Handle Slack retries
@@ -67,10 +121,11 @@ async def slack_events(request: Request):
         reason = request.headers.get("X-Slack-Retry-Reason")
         print(f"[DEBUG] Ignoring Slack retry #{retry_num} (reason: {reason})")
         return {"ok": True}
+
     data = await request.json()
     print(f"\n[DEBUG] Incoming Slack event at {datetime.now()}")
     print(f"[DEBUG] Payload type: {data.get('type')}")
-    
+
     # URL verification handshake
     if data.get("type") == "url_verification":
         print("[DEBUG] URL verification challenge received.")
@@ -88,15 +143,63 @@ async def slack_events(request: Request):
 
         user_id = event["user"]
         channel = event["channel"]
-        text = event.get("text", "").strip()
+        text = (event.get("text") or "").strip()
 
-        print(f"[DEBUG] User message from {user_id} in channel {channel}: '{text}'")
+        print(f"[DEBUG] Raw user message from {user_id} in channel {channel}: '{text}'")
+
+        # Detect and handle voice / audio files
+        voice_transcript = None
+        files = event.get("files") or []
+        audio_path = None
+
+        if files:
+            print(f"[DEBUG] Event contains {len(files)} file(s)")
+        for f in files:
+            if not is_audio_file(f):
+                continue
+
+            print(
+                f"[DEBUG] Audio file detected: id={f.get('id')} "
+                f"mimetype={f.get('mimetype')} filetype={f.get('filetype')}"
+            )
+            try:
+                audio_path = download_slack_file(f)
+                voice_transcript = transcribe_audio_file(audio_path)
+            except Exception as e:
+                print(f"[ERROR] Failed to download/transcribe audio file {f.get('id')}: {e}")
+                voice_transcript = None
+            finally:
+                if audio_path and os.path.exists(audio_path):
+                    try:
+                        os.remove(audio_path)
+                        print(f"[DEBUG] Deleted temp audio file {audio_path}")
+                    except Exception as cleanup_err:
+                        print(f"[WARN] Failed to delete temp file {audio_path}: {cleanup_err}")
+            # Only handle first audio file
+            break
+
+        # Build final user_input for agent
+        if voice_transcript:
+            if text:
+                agent_input = (
+                    f"{text}\n\n[Voice message transcript]: {voice_transcript}"
+                )
+            else:
+                agent_input = voice_transcript
+            print(f"[DEBUG] Using transcribed voice message as user_input.")
+        else:
+            agent_input = text
+
+        print(f"[DEBUG] User input to agent: '{agent_input[:120]}...'")
 
         # Lookup Mongo user linked to this Slack ID
         user_doc = users_col.find_one({"slack_id": user_id})
         if not user_doc:
             print(f"[DEBUG] Unregistered Slack user {user_id}. Rejecting message.")
-            send_message_to_slack(channel, "❌ Unregistered user. Please register your Slack account.")
+            send_message_to_slack(
+                channel,
+                "❌ Unregistered user. Please register your Slack account."
+            )
             return {"ok": False}
 
         client_id = user_doc.get("clientId")
@@ -113,7 +216,7 @@ async def slack_events(request: Request):
         try:
             print("[DEBUG] Invoking intent agent...")
             result = intent_agent.invoke({
-                "user_input": text,
+                "user_input": agent_input,
                 "conversation_history": chat_sessions[session_id],
                 "clientId": client_id,
                 "authToken": auth_token
@@ -172,13 +275,11 @@ async def new_chat_session():
     chat_sessions[session_id] = []
     return SessionResponse(session_id=session_id, conversation_history=[])
 
-
 @app.get("/chat/session/{session_id}", response_model=SessionResponse)
 async def get_session(session_id: str):
     if session_id not in chat_sessions:
         raise HTTPException(status_code=404, detail="Session not found")
     return SessionResponse(session_id=session_id, conversation_history=chat_sessions[session_id])
-
 
 @app.delete("/chat/session/{session_id}")
 async def clear_session(session_id: str):
@@ -186,7 +287,6 @@ async def clear_session(session_id: str):
         raise HTTPException(status_code=404, detail="Session not found")
     chat_sessions[session_id] = []
     return {"message": "Session cleared successfully", "session_id": session_id}
-
 
 @app.get("/chat/sessions")
 async def list_sessions():
@@ -200,7 +300,6 @@ async def list_sessions():
 @app.get("/")
 def read_root():
     return {"message": "Welcome to the Banking Assistant API!", "status": "running", "version": "1.0.0"}
-
 
 @app.get("/health")
 def health_check():
