@@ -1,254 +1,169 @@
 import bcrypt
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
-from pymongo import MongoClient
-from dotenv import load_dotenv
-import os
-from pprint import pprint
-import bcrypt
+from typing import List
 from datetime import datetime
-load_dotenv()
 
-###### Change PIN Tool ######
+from user_context import UserDataContext
+
 
 class ChangePINInput(BaseModel):
-    clientId: str = Field(..., description="Client ID to identify the user in the database.")
     cardNumber: str = Field(..., description="The card number associated with the PIN.")
     old_pin: str = Field(..., description="The current PIN code.")
     new_pin: str = Field(..., description="The new PIN code to set.")
 
-def change_pin(clientId: str, cardNumber: str, old_pin: str, new_pin: str) -> str:
-    """Change a user's PIN stored in MongoDB after verifying the old PIN."""
-    mongo_uri = os.getenv("MONGO_URI")
-    if not mongo_uri:
-        return "MONGO_URI not set in environment."
 
-    client = MongoClient(mongo_uri)
-    db = client["fransa_demo"]  # adjust DB name
-    cards = db["cards"]  # adjust collection name
-
-    user_cards = list(cards.find({"clientId": clientId, "cardNumber": {"$exists": True}}))
-
-    if not user_cards:
-        return f"Either no client found with clientId {clientId} or no card associated."
-    elif len(user_cards) == 1:
-        user = user_cards[0]
-    else:
-        if cardNumber:
-            user = cards.find_one({"clientId": clientId, "cardNumber": cardNumber})
-            if not user:
-                return f"No card found for clientId {clientId} with cardNumber {cardNumber}."
-
-    pin_hash = user.get("pinHash")
-    if not pin_hash:
-        return "No existing PIN found. Cannot change PIN."
-
-    if not bcrypt.checkpw(old_pin.encode(), pin_hash.encode()):
-        return "The old PIN provided is incorrect."
-
-    new_hash = bcrypt.hashpw(new_pin.encode(), bcrypt.gensalt()).decode()
-
-    result = cards.update_one(
-        {"clientId": clientId},
-        {"$set": {"pinHash": new_hash}}
-    )
-
-    if result.modified_count == 1:
-        return "PIN changed successfully."
-    else:
-        return "PIN change failed. Try again."
-
-change_pin_tool = StructuredTool.from_function(
-    func=change_pin,
-    name="change_pin",
-    description="Changes the user's PIN in MongoDB after verifying the old PIN.",
-    args_schema=ChangePINInput
-)
-
-###### View Card Details Tool ######
-#__________________________________#
 
 class ViewCardDetailsInput(BaseModel):
-    clientId: str = Field(..., description="Client ID to identify the user's card in the database.")
+    pass
 
-def view_card_details(clientId: str) -> str:
-    """Fetch and display card details for a given clientId from MongoDB."""
-    mongo_uri = os.getenv("MONGO_URI")
-    if not mongo_uri:
-        return "MONGO_URI not set in environment."
 
-    client = MongoClient(mongo_uri)
-    db = client["fransa_demo"]  # adjust DB name
-    cards = db["cards"]  # adjust collection name
-
-    users = list(cards.find({"clientId": clientId}))
-    print(f"[DEBUG] view_card_details fetched users: {users}")
-
-    if len(users) == 0:
-        return f"No card found for clientId {clientId}."
-    
-    
-    cards = []
-    for user in users:
-        user_card_number = user.get("cardNumber", "N/A")
-        if user_card_number != "N/A" and len(user_card_number) >= 4:
-            masked_card_number = "**** **** **** " + user_card_number[-4:]
-        else:
-            masked_card_number = "N/A"
-        card_info = {
-            "Card Number": masked_card_number,
-            "Expiry Date": user.get("expiryDate", "N/A"),
-            "Status": user.get("status", "N/A"),
-            "Type": user.get("type", "N/A"),
-            "Product Type": user.get("productType", "N/A"),
-            "Currency": user.get("currency", "N/A"),
-            "Available Balance": user.get("availableBalance", "N/A"),
-            "Current Balance": user.get("currentBalance", "N/A"),
-            "Card Limit": user.get("cardLimit", "N/A"),
-            "Cashback Percentage": user.get("cashback", "N/A"),
-        }
-        cards.append(card_info)
-
-    details = ""
-    for idx, card in enumerate(cards, start=1):
-        details += f"--- Card {idx} ---\n"
-        for key, value in card.items():
-            details += f"{key}: {value}\n"
-        details += "\n"
-    return details
-
-view_card_details_tool = StructuredTool.from_function(
-    func=view_card_details,
-    name="view_card_details",
-    description="Retrieves and displays the user's card details from MongoDB.",
-    args_schema=ViewCardDetailsInput
-)
-###### List Recent Transactions Tool ######
-#_________________________________________#
 
 class ListRecentTransactionsInput(BaseModel):
-    clientId: str = Field(..., description="Client ID to identify the user's card in the database.")
     cardNumber: str = Field(..., description="The card number associated with the transactions.")
     count: int = Field(5, description="Number of recent transactions to retrieve.")
 
-def list_recent_transactions(clientId: str, cardNumber: str, count: int = 5) -> str:
-    """Retrieve and list recent transactions for a user from MongoDB."""
-    mongo_uri = os.getenv("MONGO_URI")
-    if not mongo_uri:
-        return "MONGO_URI not set in environment."
 
-    client = MongoClient(mongo_uri)
-    db = client["fransa_demo"]
-    cards = db["cards"]
-
-    user_cards = list(cards.find({"clientId": clientId, "cardNumber": {"$exists": True}}))
-
-    if not user_cards:
-        return f"Either no client found with clientId {clientId} or no card associated."
-    elif len(user_cards) == 1:
-        user = user_cards[0]
-    else:
-        if cardNumber:
-            user = cards.find_one({"clientId": clientId, "cardNumber": cardNumber})
-            if not user:
-                return f"No card found for clientId {clientId} with cardNumber {cardNumber}."
-
-    transactions = user.get("transactions", [])
-    if not transactions:
-        return "No transactions found."
-
-    recent_transactions = transactions[:count]
-    transaction_details = []
-    for txn in recent_transactions:
-        detail = f"""
-Date: {txn.get('date', 'N/A')}  Time: {txn.get('time', 'N/A')}
-Terminal Location: {txn.get('terminalLocation', 'N/A')}
-Amount: {txn.get('transactionAmount', 'N/A')}
-Currency: {txn.get('transactionCurrency', 'N/A')}
-Response: {txn.get('responseCodeDescription', 'N/A')}
-Reference Number: {txn.get('referenceNumber', 'N/A')}
-""".strip()
-        transaction_details.append(detail)
-
-    return "\n\n".join(transaction_details)
-
-list_recent_transactions_tool = StructuredTool.from_function(
-    func=list_recent_transactions,
-    name="list_recent_transactions",
-    description="Lists recent transactions for a user fetched from MongoDB (fransa_demo.cards).",
-    args_schema=ListRecentTransactionsInput
-)
-
-###### List Transactions Per Date Range Tool ######
 
 class ListTransactionsDateRangeInput(BaseModel):
-    clientId: str = Field(..., description="Client ID to identify the user's card in the database.")
     cardNumber: str = Field(..., description="The card number associated with the transactions.")
     start_date: str = Field(..., description="Start date in DDMMYYYY format.")
     end_date: str = Field(..., description="End date in DDMMYYYY format.")
 
-def list_transactions_date_range(clientId: str, cardNumber: str, start_date: str, end_date: str) -> str:
-    """Retrieve all transactions for a user within a given date range from MongoDB."""
-    mongo_uri = os.getenv("MONGO_URI")
-    if not mongo_uri:
-        return "MONGO_URI not set in environment."
 
-    client = MongoClient(mongo_uri)
-    db = client["fransa_demo"]
-    cards = db["cards"]
 
-    user_cards = list(cards.find({"clientId": clientId, "cardNumber": {"$exists": True}}))
+def build_banking_tools(user_ctx: UserDataContext) -> List[StructuredTool]:
 
-    if not user_cards:
-        return f"Either no client found with clientId {clientId} or no card associated."
-    elif len(user_cards) == 1:
-        user = user_cards[0]
-    else:
-        if cardNumber:
-            user = cards.find_one({"clientId": clientId, "cardNumber": cardNumber})
-            if not user:
-                return f"No card found for clientId {clientId} with cardNumber {cardNumber}."
+    def change_pin(cardNumber: str, old_pin: str, new_pin: str) -> str:
+        cards = user_ctx.get_cards()
+        if not cards:
+            return "No cards found for this user."
 
-    transactions = user.get("transactions", [])
-    if not transactions:
-        return "No transactions found for this user."
+        card = user_ctx.get_card(cardNumber)
+        if not card:
+            return "No matching card found for this user."
 
-    filtered_transactions = [
-        txn for txn in transactions
-        if start_date <= txn.get("date", "") <= end_date
+        pin_hash = card.get("pinHash")
+        if not pin_hash:
+            return "This card has no PIN set."
+
+        if not bcrypt.checkpw(old_pin.encode(), pin_hash.encode()):
+            return "The old PIN is incorrect."
+
+        new_hash = bcrypt.hashpw(new_pin.encode(), bcrypt.gensalt()).decode()
+        modified = user_ctx.update_pin(cardNumber, new_hash)
+        if modified:
+            return "PIN changed successfully."
+        return "PIN update failed."
+
+    change_pin_tool = StructuredTool.from_function(
+        func=change_pin,
+        name="change_pin",
+        description="Change the PIN for this user's specified card.",
+        args_schema=ChangePINInput,
+    )
+
+    def view_card_details() -> str:
+        cards = user_ctx.get_cards()
+        if not cards:
+            return "No cards found for this user."
+
+        details = ""
+        for idx, card in enumerate(cards, start=1):
+            masked = (
+                "**** **** **** " + card["cardNumber"][-4:]
+                if len(card.get("cardNumber", "")) >= 4
+                else "N/A"
+            )
+            details += f"--- Card {idx} ---\n"
+            details += f"Card Number: {masked}\n"
+            details += f"Expiry Date: {card.get('expiryDate', 'N/A')}\n"
+            details += f"Status: {card.get('status', 'N/A')}\n"
+            details += f"Type: {card.get('type', 'N/A')}\n"
+            details += f"Currency: {card.get('currency', 'N/A')}\n"
+            details += f"Available Balance: {card.get('availableBalance', 'N/A')}\n"
+            details += f"Current Balance: {card.get('currentBalance', 'N/A')}\n\n"
+        return details.strip()
+
+    view_card_details_tool = StructuredTool.from_function(
+        func=view_card_details,
+        name="view_card_details",
+        description="View all card details for this user.",
+        args_schema=ViewCardDetailsInput,
+    )
+
+    def list_recent_transactions(cardNumber: str, count: int = 5) -> str:
+        txns = user_ctx.get_transactions(cardNumber)
+        if not txns:
+            return "No transactions found."
+
+        recent = txns[:count]
+        lines = []
+        for t in recent:
+            lines.append(
+                f"{t.get('date', 'N/A')} {t.get('time', '')} | "
+                f"{t.get('transactionAmount', 'N/A')} {t.get('transactionCurrency', '')} | "
+                f"{t.get('terminalLocation', 'N/A')} | {t.get('responseCodeDescription', '')}"
+            )
+        return "\n".join(lines)
+
+    list_recent_transactions_tool = StructuredTool.from_function(
+        func=list_recent_transactions,
+        name="list_recent_transactions",
+        description="List the most recent transactions for a given card.",
+        args_schema=ListRecentTransactionsInput,
+    )
+
+    # --- List Transactions by Date Range ---
+    def list_transactions_date_range(cardNumber: str, start_date: str, end_date: str) -> str:
+        txns = user_ctx.get_transactions(cardNumber)
+        if not txns:
+            return "No transactions available for this card."
+
+        filtered = [t for t in txns if start_date <= t.get("date", "") <= end_date]
+        if not filtered:
+            return f"No transactions between {start_date} and {end_date}."
+
+        lines = []
+        for t in filtered:
+            lines.append(
+                f"{t.get('date', 'N/A')} {t.get('time', '')} | "
+                f"{t.get('transactionAmount', 'N/A')} {t.get('transactionCurrency', '')} | "
+                f"{t.get('terminalLocation', 'N/A')} | {t.get('responseCodeDescription', '')}"
+            )
+        return "\n".join(lines)
+
+    list_transactions_date_range_tool = StructuredTool.from_function(
+        func=list_transactions_date_range,
+        name="list_transactions_date_range",
+        description="List all transactions for a given card in a specific date range.",
+        args_schema=ListTransactionsDateRangeInput,
+    )
+
+    return [
+        change_pin_tool,
+        view_card_details_tool,
+        list_recent_transactions_tool,
+        list_transactions_date_range_tool,
     ]
 
-    if not filtered_transactions:
-        return f"No transactions found between {start_date} and {end_date}."
 
-    transaction_details = []
-    for txn in filtered_transactions:
-        detail = f"""
-Date: {txn.get('date', 'N/A')}  Time: {txn.get('time', 'N/A')}
-Terminal Location: {txn.get('terminalLocation', 'N/A')}
-Amount: {txn.get('transactionAmount', 'N/A')}
-Currency: {txn.get('transactionCurrency', 'N/A')}
-Response: {txn.get('responseCodeDescription', 'N/A')}
-Reference Number: {txn.get('referenceNumber', 'N/A')}
-""".strip()
-        transaction_details.append(detail)
-
-    return "\n\n".join(transaction_details)
-
-list_transactions_date_range_tool = StructuredTool.from_function(
-    func=list_transactions_date_range,
-    name="list_transactions_date_range",
-    description="Lists all transactions for a user within a given date range from MongoDB (fransa_demo.cards).",
-    args_schema=ListTransactionsDateRangeInput
-)
-
+# --- Manual test ---
 if __name__ == "__main__":
-    # Example usage
-    print("----- Change PIN Example -----")
-    print(change_pin("1001", "5007673290469960", "0000", "1234"))
-    print("\n----- View Card Details Example -----")
-    print(view_card_details("1001"))
-    print("\n----- List Recent Transactions Example -----")
-    print(list_recent_transactions("1001", "5007673290469960", 3))
-    print("\n----- List Transactions Date Range Example -----")
-    print(list_transactions_date_range("1001", "5007673290469960", "23102025", "23102025"))
+    from pymongo import MongoClient
+    from dotenv import load_dotenv
+    import os
+
+    load_dotenv()
+    client = MongoClient(os.getenv("MONGO_URI"))
+    db = client["fransa_demo"]
+
+    from user_context import UserDataContext
+
+    ctx = UserDataContext("1001", db["cards"], db["transactions"])
+    tools = build_banking_tools(ctx)
+
+    print(tools[0].invoke({"cardNumber": "5007673290469960", "old_pin": "0000", "new_pin": "1234"}))
+    print(tools[1].invoke({}))  # view_card_details
+    print(tools[2].invoke({"cardNumber": "5007673290469960", "count": 3}))
+    print(tools[3].invoke({"cardNumber": "5007673290469960", "start_date": "23102025", "end_date": "24102025"}))
