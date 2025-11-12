@@ -4,8 +4,15 @@ from langchain_ollama import ChatOllama
 from prompts.intent_prompt import intent_prompt
 from dotenv import load_dotenv
 import os
+import pymongo
 
 load_dotenv()
+
+# === Mongo Setup ===
+mongo_uri = os.getenv("MONGO_URI")
+mongoClient = pymongo.MongoClient(mongo_uri)
+database = mongoClient["fransa_demo"]
+collection = database["users"]
 
 # === State Definition ===
 class IntentState(TypedDict):
@@ -13,7 +20,25 @@ class IntentState(TypedDict):
     intent: str | None
     result: Dict[str, Any] | None
     conversation_history: List[Dict[str, str]]
-    context: str | None  # e.g. "banking_in_progress"
+    clientId: str | None
+    slack_user_id: str | None
+    context: str | None
+    user_ctx: Any | None  # <-- add this
+
+# === Extractor ===
+def get_client_id_from_slack_user(slack_user_id: str | None) -> str | None:
+    """Lookup clientId directly from MongoDB via Slack user ID."""
+    if not slack_user_id:
+        print("[DEBUG] No Slack user ID provided to lookup.")
+        return None
+
+    user_doc = collection.find_one({"slack_id": slack_user_id})
+    if user_doc and "clientId" in user_doc:
+        print(f"[DEBUG] Slack user {slack_user_id} → clientId {user_doc['clientId']}")
+        return user_doc["clientId"]
+
+    print(f"[DEBUG] No clientId found for Slack user {slack_user_id}")
+    return None
 
 # === Initialize LLM ===
 llm = ChatOllama(model=os.getenv("MODEL_NAME"), temperature=0)
@@ -22,25 +47,25 @@ llm = ChatOllama(model=os.getenv("MODEL_NAME"), temperature=0)
 def intent_detector(state: IntentState) -> IntentState:
     user_input = state["user_input"]
     conversation_history = state.get("conversation_history", [])
+    slack_user_id = state.get("slack_user_id")
 
-    # Detect whether we’re in a banking context based on previous assistant replies
+    # Get clientId from slack_user_id or fallback
+    client_id = state.get("clientId") or get_client_id_from_slack_user(slack_user_id)
+
+    # Detect whether we’re in a banking context
     in_banking_context = False
     for msg in reversed(conversation_history):
         if msg.get("role") == "assistant":
             content_lower = msg.get("content", "").lower()
-            if any(
-                word in content_lower
-                for word in ["card", "pin", "transaction", "balance", "which card", "provide"]
-            ):
+            if any(word in content_lower for word in ["card", "pin", "transaction", "balance", "which card", "provide"]):
                 in_banking_context = True
             break
 
-    # Lightweight heuristic: short / numeric input in banking context → "customer_request"
+    # Intent classification
     if in_banking_context and (user_input.replace(" ", "").isdigit() or len(user_input.split()) <= 3):
         intent = "customer_request"
     else:
-        # NO clientId here, pure text-based intent classification
-        prompt = intent_prompt(user_input)
+        prompt = intent_prompt(user_input, client_id)
         response = llm.invoke(prompt)
         intent = response.content.strip().lower()
 
@@ -49,19 +74,20 @@ def intent_detector(state: IntentState) -> IntentState:
         "intent": intent,
         "result": None,
         "conversation_history": conversation_history,
-        "context": state.get("context"),
+        "clientId": client_id,
+        "slack_user_id": slack_user_id,
     }
 
 # === Banking Node ===
 def banking_node(state: IntentState) -> IntentState:
     from agents.bankingAgent import create_banking_agent
 
-    # For now: banking_agent is still global (we'll refactor it to accept user_ctx later)
-    banking_agent = create_banking_agent()
+    banking_agent = create_banking_agent(state["user_ctx"])
+    client_id = state.get("clientId")
     conversation_history = state.get("conversation_history", [])
 
-    # No [clientId=...] prefix anymore
-    user_message = {"role": "user", "content": state["user_input"]}
+    # Add message with clientId included
+    user_message = {"role": "user", "content": f"[clientId={client_id}] {state['user_input']}"}
     messages = conversation_history + [user_message]
 
     # Invoke banking agent
@@ -91,6 +117,8 @@ def banking_node(state: IntentState) -> IntentState:
         "intent": state["intent"],
         "result": {"type": "banking_response", "content": content},
         "conversation_history": updated_history,
+        "clientId": client_id,
+        "slack_user_id": state.get("slack_user_id"),
         "context": context,
     }
 
@@ -109,7 +137,8 @@ def fallback_node(state: IntentState) -> IntentState:
         "intent": state["intent"],
         "result": {"type": "fallback_response", "content": fallback_msg},
         "conversation_history": updated_history,
-        "context": state.get("context"),
+        "clientId": state.get("clientId"),
+        "slack_user_id": state.get("slack_user_id"),
     }
 
 # === Router ===
@@ -120,9 +149,40 @@ def route_by_intent(state: IntentState) -> str:
     elif intent in ("general_query", "sql_query"):
         return "fallback_node"
     return "fallback_node"
-
-def create_intent_agent():
+def create_intent_agent(user_ctx):
     builder = StateGraph(IntentState)
+
+    # banking_node depends on user_ctx, so define it inside this function
+    def banking_node(state: IntentState) -> IntentState:
+        from agents.bankingAgent import create_banking_agent
+
+        banking_agent = create_banking_agent(user_ctx)
+        conversation_history = state.get("conversation_history", [])
+        user_input = state["user_input"]
+
+        user_message = {"role": "user", "content": user_input}
+        messages = conversation_history + [user_message]
+
+        result = banking_agent.invoke({"messages": messages})
+        final_message = result["messages"][-1]
+        content = getattr(final_message, "content", str(final_message))
+
+        updated_history = conversation_history + [
+            user_message,
+            {"role": "assistant", "content": content},
+        ]
+
+        return {
+            "user_input": user_input,
+            "intent": state["intent"],
+            "result": {"type": "banking_response", "content": content},
+            "conversation_history": updated_history,
+            "clientId": None,
+            "slack_user_id": state.get("slack_user_id"),
+            "context": None,
+            "user_ctx": user_ctx,
+        }
+
     builder.add_node("intent_detector", intent_detector)
     builder.add_node("banking_node", banking_node)
     builder.add_node("fallback_node", fallback_node)
@@ -136,19 +196,19 @@ def create_intent_agent():
     builder.add_conditional_edges("intent_detector", route_by_intent)
     builder.add_edge("banking_node", END)
     builder.add_edge("fallback_node", END)
+
     return builder.compile()
 
 # === Test Run ===
 if __name__ == "__main__":
     agent = create_intent_agent()
-    test_state: IntentState = {
+    # simulate Slack event (sender vs. mention)
+    test_state = {
         "user_input": "<@U09S9M6TA81> Show my transactions.",
-        "intent": None,
-        "result": None,
-        "conversation_history": [],
-        "context": None,
+        "slack_user_id": "U09SRT9331N",  # real sender
     }
     result = agent.invoke(test_state)
     print("\n=== Final Output ===")
     print("Detected Intent:", result["intent"])
+    print("Client ID:", result["clientId"])
     print("Response:", result["result"]["content"])

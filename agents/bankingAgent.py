@@ -5,27 +5,11 @@ from langchain_ollama import ChatOllama
 from prompts.banking_prompt import banking_prompt
 from dotenv import load_dotenv
 import os
-from tools.mcptools import (
-    change_pin_tool,
-    view_card_details_tool,
-    list_recent_transactions_tool,
-    list_transactions_date_range_tool,
-)
+from tools.mcptools import build_banking_tools
 
 load_dotenv()
 
-TOOLS = [
-    change_pin_tool,
-    view_card_details_tool,
-    list_recent_transactions_tool,
-    list_transactions_date_range_tool,
-]
 
-# 2. Bind tools to LLM
-LLM = ChatOllama(model=os.getenv("MODEL_NAME"), temperature=0).bind_tools(TOOLS)
-
-# 3. Create tool execution node
-tool_node = ToolNode(TOOLS)
 
 
 def banking_llm_agent(state: MessagesState) -> Dict[str, Any]:
@@ -59,26 +43,56 @@ def should_continue(state: MessagesState) -> str:
     if hasattr(last_message, "tool_calls") and last_message.tool_calls:
         return "tools"
     return "end"
+from langgraph.graph import MessagesState, StateGraph, START, END
+from langgraph.prebuilt import ToolNode
+from langchain_ollama import ChatOllama
+from tools.mcptools import build_banking_tools
+from prompts.banking_prompt import banking_prompt
+import os
 
+def create_banking_agent(user_ctx):
+    tools = build_banking_tools(user_ctx)
+    llm = ChatOllama(model=os.getenv("MODEL_NAME"), temperature=0).bind_tools(tools)
+    tool_node = ToolNode(tools)
 
-# 5. Build graph
-def create_banking_agent():
+    def banking_llm_agent(state: MessagesState):
+        messages = state["messages"]
+        has_system = any(
+            (hasattr(m, "type") and m.type == "system")
+            or (isinstance(m, dict) and m.get("role") == "system")
+            for m in messages
+        )
+
+        if not has_system:
+            system_msg = {
+                "role": "system",
+                "content": banking_prompt(),  # no clientId anymore
+            }
+            messages = [system_msg] + messages
+            print(f"[DEBUG] System Prompt: {system_msg['content'][:100]}...")
+
+        ai_msg = llm.invoke(messages)
+        return {"messages": messages + [ai_msg]}
+
+    def should_continue(state: MessagesState) -> str:
+        messages = state["messages"]
+        last = messages[-1]
+        if hasattr(last, "tool_calls") and last.tool_calls:
+            return "tools"
+        return "end"
+
     builder = StateGraph(MessagesState)
     builder.add_node("card_llm_agent", banking_llm_agent)
     builder.add_node("tools", tool_node)
     builder.add_edge(START, "card_llm_agent")
-    builder.add_conditional_edges(
-        "card_llm_agent",
-        should_continue,
-        {"tools": "tools", "end": END},
-    )
+    builder.add_conditional_edges("card_llm_agent", should_continue, {"tools": "tools", "end": END})
     builder.add_edge("tools", "card_llm_agent")
-    return builder.compile()
 
+    return builder.compile()
 
 # 6. Run agent (manual test)
 if __name__ == "__main__":
-    agent = create_banking_agent()
+    agent = create_banking_agent(user_ctx={"clientId": "user_12345"})  # Example user context
     user_message = {"role": "user", "content": "Show my last 3 transactions."}
     result = agent.invoke({"messages": [user_message]})
     print("\n=== Final Response ===")
