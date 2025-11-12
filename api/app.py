@@ -10,7 +10,7 @@ import tempfile
 from datetime import datetime
 
 from agents.intentAgent import create_intent_agent
-from faster_whisper import WhisperModel  # open-source STT
+from faster_whisper import WhisperModel  
 
 load_dotenv()
 
@@ -24,8 +24,6 @@ client = MongoClient(MONGO_URI)
 db = client["fransa_demo"]
 users_col = db["users"]
 
-# === Open-source Speech-to-Text model (faster-whisper) ===
-# You can switch "small" -> "tiny" if you want it lighter / faster.
 stt_model = WhisperModel(
     "small",
     device="cpu",        # or "cuda" if you have GPU
@@ -34,7 +32,7 @@ stt_model = WhisperModel(
 
 AUDIO_FILETYPES = {"mp3", "m4a", "wav", "ogg", "webm", "mp4"}
 
-def is_audio_file(file_obj: Dict) -> bool:
+async def is_audio_file(file_obj: Dict) -> bool:
     mimetype = (file_obj.get("mimetype") or "").lower()
     filetype = (file_obj.get("filetype") or "").lower()
     if mimetype.startswith("audio/"):
@@ -43,7 +41,7 @@ def is_audio_file(file_obj: Dict) -> bool:
         return True
     return False
 
-def download_slack_file(file_obj: Dict) -> str:
+async def download_slack_file(file_obj: Dict) -> str:
     """
     Download a Slack file to a temporary path and return the path.
     Requires files:read scope and a valid bot token.
@@ -63,7 +61,7 @@ def download_slack_file(file_obj: Dict) -> str:
 
     return tmp_path
 
-def transcribe_audio_file(path: str) -> str:
+async def transcribe_audio_file(path: str) -> str:
     """
     Transcribe an audio file using faster-whisper and return the text.
     """
@@ -112,6 +110,7 @@ def send_message_to_slack(channel: str, text: str):
     }
     payload = {"channel": channel, "text": text}
     requests.post("https://slack.com/api/chat.postMessage", headers=headers, json=payload)
+    
 @app.post("/slack/events")
 async def slack_events(request: Request):
     # Handle Slack retries
@@ -122,6 +121,7 @@ async def slack_events(request: Request):
         return {"ok": True}
 
     data = await request.json()
+    print(f"DATA: {data}")
     print(f"\n[DEBUG] Incoming Slack event at {datetime.now()}")
     print(f"[DEBUG] Payload type: {data.get('type')}")
 
@@ -285,11 +285,11 @@ async def list_sessions():
     }
 
 @app.get("/")
-def read_root():
+async def read_root():
     return {"message": "Welcome to the Banking Assistant API!", "status": "running", "version": "1.0.0"}
 
 @app.get("/health")
-def health_check():
+async def health_check():
     return {"status": "ok"}
 
 if __name__ == "__main__":
