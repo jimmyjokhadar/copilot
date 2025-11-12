@@ -42,14 +42,12 @@ def get_client_id_from_slack_user(slack_user_id: str | None) -> str | None:
 
 # === Initialize LLM ===
 llm = ChatOllama(model=os.getenv("MODEL_NAME"), temperature=0)
-
-# === Intent Detector Node ===
 def intent_detector(state: IntentState) -> IntentState:
     user_input = state["user_input"]
     conversation_history = state.get("conversation_history", [])
     slack_user_id = state.get("slack_user_id")
 
-    # Get clientId from slack_user_id or fallback
+    # Get clientId from Slack user ID if available
     client_id = state.get("clientId") or get_client_id_from_slack_user(slack_user_id)
 
     # Detect whether we’re in a banking context
@@ -65,7 +63,7 @@ def intent_detector(state: IntentState) -> IntentState:
     if in_banking_context and (user_input.replace(" ", "").isdigit() or len(user_input.split()) <= 3):
         intent = "customer_request"
     else:
-        prompt = intent_prompt(user_input, client_id)
+        prompt = intent_prompt(user_input)  # <-- FIXED (removed client_id)
         response = llm.invoke(prompt)
         intent = response.content.strip().lower()
 
@@ -74,11 +72,13 @@ def intent_detector(state: IntentState) -> IntentState:
         "intent": intent,
         "result": None,
         "conversation_history": conversation_history,
-        "clientId": client_id,
+        "clientId": client_id,  
         "slack_user_id": slack_user_id,
+        "context": None,
+        "user_ctx": state.get("user_ctx"),
     }
 
-# === Banking Node ===
+
 def banking_node(state: IntentState) -> IntentState:
     from agents.bankingAgent import create_banking_agent
 
