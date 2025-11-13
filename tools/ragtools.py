@@ -8,7 +8,12 @@ import os
 
 MILVUS_HOST = os.getenv("MILVUS_HOST", "localhost")
 MILVUS_PORT = os.getenv("MILVUS_PORT", "19530")
-connections.connect("default", host=MILVUS_HOST, port=MILVUS_PORT)
+connections.connect(
+    "default",
+    host=MILVUS_HOST,
+    port=MILVUS_PORT,
+    db_name="Banks_DB"
+)
 
 embedder = SentenceTransformer("all-MiniLM-L6-v2")
 
@@ -36,7 +41,7 @@ def similarity_tool(embedding: List[float], collection_name: str, top_k: int = 5
     """Query Milvus for top-k similar document chunks."""
     print(f"[DEBUG] Searching Milvus collection: {collection_name}")
     collection = Collection(collection_name)
-    search_params = {"metric_type": "IP", "params": {"nprobe": 8}}
+    search_params = {"metric_type": "L2", "params": {"nprobe": 8}}
     results = collection.search(
         data=[embedding],
         anns_field="embedding",

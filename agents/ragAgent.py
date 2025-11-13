@@ -9,7 +9,7 @@ class RagState(TypedDict):
     result: Dict[str, Any] | None
     intent: str | None
     bank_name: str
-    embedding: list | None  # add this explicitly
+    embedding: list | None  
 
 
 def create_ragging_agent(bank_name: str):
@@ -20,7 +20,7 @@ def create_ragging_agent(bank_name: str):
         query = state["user_input"]
         emb = tools[0].invoke({"query": query})
         print(f"[DEBUG] Generated embedding with length {len(emb)}")
-        return {**state, "embedding": emb}  # <— ensure key exists
+        return {**state, "embedding": emb}  
 
     def similarity_step(state: RagState):
         emb = state.get("embedding")

@@ -180,7 +180,7 @@ async def slack_events(request: Request):
             rag_result = rag_agent.invoke({
                 "user_input": text,
                 "intent": "general_query",
-                "bank_name": "fransa_demo",
+                "bank_name": "Bank_of_Beirut",
                 "conversation_history": conversation_history,
             })
             response_text = rag_result["result"]["content"]
