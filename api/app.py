@@ -10,12 +10,12 @@ import tempfile
 from datetime import datetime
 
 from agents.intentAgent import create_intent_agent
+from agents.ragAgent import create_ragging_agent
 from faster_whisper import WhisperModel
 from user_context import UserDataContext
 
-load_dotenv()
-
 # === Environment setup ===
+load_dotenv()
 MONGO_URI = os.getenv("MONGO_URI")
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
 
@@ -30,18 +30,16 @@ transactions_col = db["transactions"]
 
 # === Whisper STT ===
 stt_model = WhisperModel("small", device="cpu", compute_type="int8")
-
 AUDIO_FILETYPES = {"mp3", "m4a", "wav", "ogg", "webm", "mp4"}
 
 # === Helper functions ===
-async def is_audio_file(file_obj: Dict) -> bool:
+def is_audio_file(file_obj: Dict) -> bool:
     mimetype = (file_obj.get("mimetype") or "").lower()
     filetype = (file_obj.get("filetype") or "").lower()
     return mimetype.startswith("audio/") or filetype in AUDIO_FILETYPES
 
 
-async def download_slack_file(file_obj: Dict) -> str:
-    """Download Slack file temporarily (requires files:read)."""
+def download_slack_file(file_obj: Dict) -> str:
     url = file_obj.get("url_private_download") or file_obj.get("url_private")
     if not url:
         raise ValueError("Slack file has no downloadable URL")
@@ -55,8 +53,7 @@ async def download_slack_file(file_obj: Dict) -> str:
     return tmp_path
 
 
-async def transcribe_audio_file(path: str) -> str:
-    """Run faster-whisper on file."""
+def transcribe_audio_file(path: str) -> str:
     print(f"[DEBUG] Transcribing audio file at {path}")
     segments, _ = stt_model.transcribe(path, beam_size=5)
     transcript = " ".join([s.text for s in segments]).strip()
@@ -108,13 +105,13 @@ class SessionResponse(BaseModel):
 # === Slack endpoint ===
 @app.post("/slack/events")
 async def slack_events(request: Request):
+    # Handle Slack verification & retries
     if request.headers.get("X-Slack-Retry-Num"):
         return {"ok": True}
 
     data = await request.json()
     if data.get("type") == "url_verification":
         return {"challenge": data["challenge"]}
-
     if data.get("type") != "event_callback":
         return {"ok": True}
 
@@ -127,36 +124,71 @@ async def slack_events(request: Request):
     text = (event.get("text") or "").strip()
     print(f"[DEBUG] Incoming message from Slack user {user_id}: {text}")
 
-    # Fetch user doc
+    # Handle Slack voice/audio attachments
+    files = event.get("files", [])
+    if files:
+        for f in files:
+            if is_audio_file(f):
+                print(f"[DEBUG] Detected audio file from Slack user {user_id}")
+                try:
+                    path = download_slack_file(f)
+                    text = transcribe_audio_file(path)
+                    os.remove(path)
+                    print(f"[DEBUG] Transcribed audio: {text}")
+                except Exception as e:
+                    print(f"[ERROR] Audio processing failed: {e}")
+                    send_message_to_slack(channel, f"⚠️ Could not process voice message: {str(e)}")
+                    return {"ok": True}
+                break
+
+    if not text:
+        print(f"[DEBUG] No text or audio content from {user_id}, ignoring.")
+        return {"ok": True}
+
+    # Authenticate user
     user_doc = users_col.find_one({"slack_id": user_id})
     if not user_doc:
-        send_message_to_slack(channel, "❌ Unregistered user. Please register your Slack account.")
-        return {"ok": False}
+        print(f"[DEBUG] Ignored unregistered Slack user {user_id} in channel {channel}")
+        return {"ok": True}
 
     client_id = user_doc.get("clientId")
     if not client_id:
         send_message_to_slack(channel, "⚠️ No client ID found for this account.")
-        return {"ok": False}
+        return {"ok": True}
 
-    # === Create user context ===
+    # Create user context
     user_ctx = UserDataContext(client_id, cards_col, transactions_col)
 
-    # === Prepare session ===
+    # Session prep
     session_id = f"slack_{user_id}"
     chat_sessions.setdefault(session_id, [])
     conversation_history = chat_sessions[session_id]
 
-    # === Create user-scoped agent ===
-    intent_agent = create_intent_agent(user_ctx)
-
-    # === Process message ===
+    # Process message
     try:
+        intent_agent = create_intent_agent(user_ctx)
         result = intent_agent.invoke({
             "user_input": text,
             "conversation_history": conversation_history,
         })
-        response_text = result.get("result", {}).get("content", "No response")
+        intent = result.get("intent", "unknown")
+        print(f"[DEBUG] Detected intent: {intent}")
+
+        if intent == "general_query":
+            print("[DEBUG] Routing to RAG agent...")
+            rag_agent = create_ragging_agent(bank_name="Bank_of_Beirut")
+            rag_result = rag_agent.invoke({
+                "user_input": text,
+                "intent": "general_query",
+                "bank_name": "fransa_demo",
+                "conversation_history": conversation_history,
+            })
+            response_text = rag_result["result"]["content"]
+        else:
+            response_text = result.get("result", {}).get("content", "No response")
+
         chat_sessions[session_id] = result.get("conversation_history", [])
+
     except Exception as e:
         print(f"[ERROR] Slack processing failed: {e}")
         send_message_to_slack(channel, f"⚠️ Error: {str(e)}")
@@ -173,7 +205,6 @@ async def chat(chat_message: ChatMessage):
         if not chat_message.clientId:
             raise HTTPException(status_code=401, detail="Missing clientId")
 
-        # Build user context
         user_ctx = UserDataContext(chat_message.clientId, cards_col, transactions_col)
         session_id = chat_message.session_id or f"session_{datetime.now().timestamp()}"
         chat_sessions.setdefault(session_id, [])
@@ -185,10 +216,26 @@ async def chat(chat_message: ChatMessage):
             "conversation_history": conversation_history,
         })
 
+        intent = result.get("intent", "unknown")
+        print(f"[DEBUG] Detected intent: {intent}")
+
+        if intent == "general_query":
+            rag_agent = create_ragging_agent(bank_name="fransa_demo")
+            rag_result = rag_agent.invoke({
+                "user_input": chat_message.message,
+                "intent": "general_query",
+                "bank_name": "fransa_demo",
+                "conversation_history": conversation_history,
+            })
+            response_text = rag_result["result"]["content"]
+        else:
+            response_text = result["result"]["content"]
+
         chat_sessions[session_id] = result.get("conversation_history", [])
+
         return ChatResponse(
-            response=result["result"]["content"],
-            intent=result["intent"],
+            response=response_text,
+            intent=intent,
             session_id=session_id,
             conversation_history=result["conversation_history"],
         )
