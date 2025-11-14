@@ -1,4 +1,5 @@
 import os
+import logging
 from typing import Dict, Any
 from dotenv import load_dotenv
 from langchain_ollama import ChatOllama
@@ -8,7 +9,7 @@ from prompts.banking_prompt import banking_prompt
 from langgraph.graph import MessagesState, StateGraph, START, END
 
 load_dotenv()
-
+logger = logging.getLogger(__name__)
 
 class BankingAgent:
     """
@@ -36,12 +37,13 @@ class BankingAgent:
             MessagesState: Updated state with LLM response.
         """
         messages = state["messages"]
-
+        logger.debug(f"LLM Node received messages: {messages}")
         if not any(m.get("role") == "system" for m in messages if isinstance(m, dict)):
             system_msg = {"role": "system", "content": banking_prompt()}
             messages = [system_msg] + messages
 
         ai_msg = self.llm.invoke(messages)
+        logger.debug(f"LLM response: {ai_msg}")
         return {"messages": messages + [ai_msg]}
 
 
