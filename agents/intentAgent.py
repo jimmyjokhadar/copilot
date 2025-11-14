@@ -4,6 +4,7 @@ import pymongo
 from dotenv import load_dotenv
 from langchain_ollama import ChatOllama
 from typing import TypedDict, Dict, Any, List
+from agents.friendlyAgent import FriendlyAgent
 from prompts.intent_prompt import intent_prompt
 from langgraph.graph import StateGraph, START, END
 
@@ -134,7 +135,6 @@ class IntentAgent:
         Returns:
             IntentState: Updated state with friendly response.
         """
-        from agents.friendlyAgent import FriendlyAgent
 
         agent = FriendlyAgent()
         result = agent.invoke(state)
