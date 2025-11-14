@@ -1,18 +1,20 @@
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List, Dict, Optional
-from dotenv import load_dotenv
-from pymongo import MongoClient
-import requests
 import os
 import tempfile
+import requests
 from datetime import datetime
-
-from agents.intentAgent import create_intent_agent
-from agents.ragAgent import create_ragging_agent
+from dotenv import load_dotenv
+from pydantic import BaseModel
+from pymongo import MongoClient
+from logging_setup import get_logger
+from typing import List, Dict, Optional
 from faster_whisper import WhisperModel
 from user_context import UserDataContext
+from agents.ragAgent import create_ragging_agent
+from fastapi.middleware.cors import CORSMiddleware
+from agents.intentAgent import create_intent_agent
+from fastapi import FastAPI, HTTPException, Request
+
+logger = get_logger("app")
 
 # === Environment setup ===
 load_dotenv()
@@ -54,10 +56,10 @@ def download_slack_file(file_obj: Dict) -> str:
 
 
 def transcribe_audio_file(path: str) -> str:
-    print(f"[DEBUG] Transcribing audio file at {path}")
+    logger.debug(f"Transcribing audio file at {path}")
     segments, _ = stt_model.transcribe(path, beam_size=5)
     transcript = " ".join([s.text for s in segments]).strip()
-    print(f"[DEBUG] Transcription result: {transcript[:100]}...")
+    logger.debug(f"Transcription result: {transcript[:100]}...")
     return transcript or "[unintelligible voice message]"
 
 
@@ -122,21 +124,21 @@ async def slack_events(request: Request):
     user_id = event["user"]
     channel = event["channel"]
     text = (event.get("text") or "").strip()
-    print(f"[DEBUG] Incoming message from Slack user {user_id}: {text}")
+    logger.debug(f"Incoming message from Slack user {user_id}: {text}")
 
     # Handle Slack voice/audio attachments
     files = event.get("files", [])
     if files:
         for f in files:
             if is_audio_file(f):
-                print(f"[DEBUG] Detected audio file from Slack user {user_id}")
+                logger.debug(f"Detected audio file from Slack user {user_id}")
                 try:
                     path = download_slack_file(f)
                     text = transcribe_audio_file(path)
                     os.remove(path)
-                    print(f"[DEBUG] Transcribed audio: {text}")
+                    logger.debug(f"Transcribed audio: {text}")
                 except Exception as e:
-                    print(f"[ERROR] Audio processing failed: {e}")
+                    logger.Error(f"Audio processing failed: {e}")
                     send_message_to_slack(channel, f"⚠️ Could not process voice message: {str(e)}")
                     return {"ok": True}
                 break
@@ -190,7 +192,7 @@ async def slack_events(request: Request):
         chat_sessions[session_id] = result.get("conversation_history", [])
 
     except Exception as e:
-        print(f"[ERROR] Slack processing failed: {e}")
+        logger.error(f"Slack processing failed: {e}")
         send_message_to_slack(channel, f"⚠️ Error: {str(e)}")
         return {"ok": False}
 
@@ -241,7 +243,7 @@ async def chat(chat_message: ChatMessage):
         )
 
     except Exception as e:
-        print(f"[ERROR] /chat failed: {e}")
+        logger.error(f"/chat failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
