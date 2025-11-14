@@ -19,3 +19,4 @@ ffmpeg
 sentence-transformers
 pymilvus
 python-keycloak
+pytest
