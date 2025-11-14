@@ -6,3 +6,6 @@
 logs/
 database_expose/
 watsonx_tools/
+.pytest_cache/
+**.pytest_cache/*
+.DS_Store
