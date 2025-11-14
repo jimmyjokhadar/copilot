@@ -1,100 +1,81 @@
-from typing import Dict, Any
-from langgraph.graph import MessagesState, StateGraph, START, END
-from langgraph.prebuilt import ToolNode
-from langchain_ollama import ChatOllama
-from prompts.banking_prompt import banking_prompt
-from dotenv import load_dotenv
 import os
+from typing import Dict, Any
+from dotenv import load_dotenv
+from langchain_ollama import ChatOllama
+from langgraph.prebuilt import ToolNode
 from tools.mcptools import build_banking_tools
+from prompts.banking_prompt import banking_prompt
+from langgraph.graph import MessagesState, StateGraph, START, END
 
 load_dotenv()
 
 
+class BankingAgent:
+    """
+    An agent for handling banking-related queries using LLMs and tools.
+    1. Initializes with user context and builds banking tools.
+    2. Defines an LLM node to process messages and add system prompts if missing.
+    3. Implements a router to decide whether to continue with tool calls or end.
+    4. Constructs a state graph connecting the LLM and tool nodes.
+    """
+    def __init__(self, user_ctx: Dict[str, Any]):
+        self.user_ctx = user_ctx
+        self.tools = build_banking_tools(user_ctx)
+        self.llm = ChatOllama(
+            model=os.getenv("MODEL_NAME"),
+            temperature=0
+        ).bind_tools(self.tools)
 
 
-def banking_llm_agent(state: MessagesState) -> Dict[str, Any]:
-    messages = state["messages"]
-
-    # Ensure there is a system message; do NOT inject clientId anymore
-    has_system = any(
-        (hasattr(m, "type") and m.type == "system")
-        or (isinstance(m, dict) and m.get("role") == "system")
-        for m in messages
-    )
-
-    if not has_system:
-        system_msg = {
-            "role": "system",
-            # IMPORTANT: banking_prompt() must be updated to NOT require clientId
-            "content": banking_prompt(),
-        }
-        messages = [system_msg] + messages
-        print(f"[DEBUG] System Prompt: {system_msg['content'][:120]}...")
-
-    # Normal LLM + tools call
-    ai_msg = LLM.invoke(messages)
-    return {"messages": messages + [ai_msg]}
-
-
-# 4. Router function to decide if we should use tools or end
-def should_continue(state: MessagesState) -> str:
-    messages = state["messages"]
-    last_message = messages[-1]
-    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-        return "tools"
-    return "end"
-from langgraph.graph import MessagesState, StateGraph, START, END
-from langgraph.prebuilt import ToolNode
-from langchain_ollama import ChatOllama
-from tools.mcptools import build_banking_tools
-from prompts.banking_prompt import banking_prompt
-import os
-
-def create_banking_agent(user_ctx):
-    tools = build_banking_tools(user_ctx)
-    llm = ChatOllama(model=os.getenv("MODEL_NAME"), temperature=0).bind_tools(tools)
-    tool_node = ToolNode(tools)
-
-    def banking_llm_agent(state: MessagesState):
+    def llm_node(self, state: MessagesState):
+        """
+        LLM NODE: Processes messages and adds system prompt if missing.
+        Args:
+            state (MessagesState): The current state containing messages.
+        Returns:
+            MessagesState: Updated state with LLM response.
+        """
         messages = state["messages"]
-        has_system = any(
-            (hasattr(m, "type") and m.type == "system")
-            or (isinstance(m, dict) and m.get("role") == "system")
-            for m in messages
-        )
 
-        if not has_system:
-            system_msg = {
-                "role": "system",
-                "content": banking_prompt(),  # no clientId anymore
-            }
+        if not any(m.get("role") == "system" for m in messages if isinstance(m, dict)):
+            system_msg = {"role": "system", "content": banking_prompt()}
             messages = [system_msg] + messages
-            print(f"[DEBUG] System Prompt: {system_msg['content'][:100]}...")
 
-        ai_msg = llm.invoke(messages)
+        ai_msg = self.llm.invoke(messages)
         return {"messages": messages + [ai_msg]}
 
-    def should_continue(state: MessagesState) -> str:
-        messages = state["messages"]
-        last = messages[-1]
+
+    def should_continue(self, state: MessagesState) -> str:
+        """
+        ROUTER: Decides whether to continue with tool calls or end.
+        Args:
+            state (MessagesState): The current state containing messages.
+        Returns:
+            str: Next node identifier ("tools" or "end").
+        """
+        last = state["messages"][-1]
         if hasattr(last, "tool_calls") and last.tool_calls:
             return "tools"
         return "end"
 
-    builder = StateGraph(MessagesState)
-    builder.add_node("card_llm_agent", banking_llm_agent)
-    builder.add_node("tools", tool_node)
-    builder.add_edge(START, "card_llm_agent")
-    builder.add_conditional_edges("card_llm_agent", should_continue, {"tools": "tools", "end": END})
-    builder.add_edge("tools", "card_llm_agent")
 
-    return builder.compile()
+    def build(self):
+        """
+        Constructs the state graph for the banking agent.
+        Returns:
+            StateGraph: The constructed state graph.
+        """
+        builder = StateGraph(MessagesState)
 
-# 6. Run agent (manual test)
-if __name__ == "__main__":
-    agent = create_banking_agent(user_ctx={"clientId": "user_12345"})  # Example user context
-    user_message = {"role": "user", "content": "Show my last 3 transactions."}
-    result = agent.invoke({"messages": [user_message]})
-    print("\n=== Final Response ===")
-    final_message = result["messages"][-1]
-    print(final_message.content if hasattr(final_message, "content") else final_message)
+        builder.add_node("llm", self.llm_node)
+        builder.add_node("tools", ToolNode(self.tools))
+
+        builder.add_edge(START, "llm")
+        builder.add_conditional_edges(
+            "llm",
+            self.should_continue,
+            {"tools": "tools", "end": END}
+        )
+        builder.add_edge("tools", "llm")
+
+        return builder.compile()
