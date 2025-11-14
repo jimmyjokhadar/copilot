@@ -81,3 +81,14 @@ class BankingAgent:
         builder.add_edge("tools", "llm")
 
         return builder.compile()
+
+    def invoke(self, state: MessagesState):
+        """
+        Run the banking agent graph with the given state.
+        Args:
+            state (MessagesState): The initial state for the banking agent.
+        Returns:
+            MessagesState: The final state after processing.
+        """
+        graph = self.build()
+        return graph.invoke(state)
