@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
-from services.chat_service import ChatService
-from models.pydantic_models import ChatMessage, ChatResponse, SessionResponse
+from api.services.chat_service import ChatService
+from api.models.pydantic_models import ChatMessage, ChatResponse, SessionResponse
 
 class ChatController:
     def __init__(self):

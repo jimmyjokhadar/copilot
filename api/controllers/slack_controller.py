@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Request
-from services.slack_service import SlackService
+from api.services.slack_service import SlackService
 
 class SlackController:
     def __init__(self):

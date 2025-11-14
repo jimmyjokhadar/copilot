@@ -1,9 +1,9 @@
 import os
 from pymongo import MongoClient
 from user_context import UserDataContext
-from services.intent_service import IntentService
-from services.session_service import SessionService
-from models.pydantic_models import ChatMessage, ChatResponse, SessionResponse
+from api.services.intent_service import IntentService
+from api.services.session_service import SessionService
+from api.models.pydantic_models import ChatMessage, ChatResponse, SessionResponse
 
 class ChatService:
     def __init__(self):

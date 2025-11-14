@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from controllers.slack_controller import SlackController
-from controllers.chat_controller import ChatController
+from api.controllers.slack_controller import SlackController
+from api.controllers.chat_controller import ChatController
 
 app = FastAPI(title="Banking Assistant API")
 
@@ -28,3 +28,7 @@ async def root():
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8000)
