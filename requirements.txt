@@ -16,3 +16,6 @@ requests
 python-multipart
 faster-whisper
 ffmpeg
+sentence-transformers
+pymilvus
+python-keycloak
