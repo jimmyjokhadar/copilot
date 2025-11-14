@@ -5,16 +5,16 @@ from prompts.intent_prompt import intent_prompt
 from dotenv import load_dotenv
 import os
 import pymongo
-
+import logging
 load_dotenv()
-
-# === Mongo Setup ===
+logger = logging.getLogger(__name__)
+##MongoDB setup
 mongo_uri = os.getenv("MONGO_URI")
 mongoClient = pymongo.MongoClient(mongo_uri)
 database = mongoClient["fransa_demo"]
 collection = database["users"]
 
-# === State Definition ===
+##define IntentState
 class IntentState(TypedDict):
     user_input: str
     intent: str | None
@@ -23,9 +23,9 @@ class IntentState(TypedDict):
     clientId: str | None
     slack_user_id: str | None
     context: str | None
-    user_ctx: Any | None  # <-- add this
+    user_ctx: Any | None  
 
-# === Extractor ===
+#Extractor 
 def get_client_id_from_slack_user(slack_user_id: str | None) -> str | None:
     """Lookup clientId directly from MongoDB via Slack user ID."""
     if not slack_user_id:
@@ -40,7 +40,7 @@ def get_client_id_from_slack_user(slack_user_id: str | None) -> str | None:
     print(f"[DEBUG] No clientId found for Slack user {slack_user_id}")
     return None
 
-# === Initialize LLM ===
+##LLM initialization
 llm = ChatOllama(model=os.getenv("MODEL_NAME"), temperature=0)
 def intent_detector(state: IntentState) -> IntentState:
     user_input = state["user_input"]
@@ -214,17 +214,3 @@ def create_intent_agent(user_ctx):
     builder.add_edge("fallback_node", END)
 
     return builder.compile()
-
-# === Test Run ===
-if __name__ == "__main__":
-    agent = create_intent_agent()
-    # simulate Slack event (sender vs. mention)
-    test_state = {
-        "user_input": "<@U09S9M6TA81> Show my transactions.",
-        "slack_user_id": "U09SRT9331N",  # real sender
-    }
-    result = agent.invoke(test_state)
-    print("\n=== Final Output ===")
-    print("Detected Intent:", result["intent"])
-    print("Client ID:", result["clientId"])
-    print("Response:", result["result"]["content"])
