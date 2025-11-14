@@ -1,10 +1,13 @@
-from langgraph.graph import StateGraph, START, END
+import os
+import logging
+from dotenv import load_dotenv
 from langchain_ollama import ChatOllama
-from typing import TypedDict, Dict, Any, List
 from tools.ragtools import build_rag_tools
+from typing import TypedDict, Dict, Any, List
 from prompts.ragging_prompt import ragging_prompt
-import logging 
+from langgraph.graph import StateGraph, START, END
 
+load_dotenv()
 logger = logging.getLogger(__name__)
 
 class RagState(TypedDict):
@@ -17,21 +20,41 @@ class RagState(TypedDict):
 
 
 class RagAgent:
+    """
+    An agent for Retrieval-Augmented Generation (RAG) using LLMs and vector search.
+    1. Initializes with bank name and builds RAG tools.
+    2. Defines steps for embedding generation, similarity search, and answer generation.
+    3. Constructs a state graph connecting these steps.
+    """
     def __init__(self, bank_name: str):
-        """Initialize RAG agent with tools and model."""
         self.bank_name = bank_name
         self.tools = build_rag_tools()
-        self.model = ChatOllama(model="gpt-oss:latest", temperature=0.3)
+        self.model = ChatOllama(
+            model=os.getenv("MODEL_NAME"), temperature=0.3
+        ).bind_tools(self.tools)
         self.graph = self._build_graph()
 
     def _embedding_step(self, state: RagState) -> RagState:
-        """Generate embedding for user query."""
+        """
+        Generate embedding for the user input.
+        Args:
+            state (RagState): The current state containing user input.
+        Returns:
+            RagState: Updated state with generated embedding.
+        """
         emb = self.tools[0].invoke({"query": state["user_input"]})
         logger.debug(f"Generated embedding: {emb}")
         return {**state, "embedding": emb}
 
     def _similarity_step(self, state: RagState) -> RagState:
-        """Perform similarity search using embedding."""
+        """
+        Perform similarity search using embedding.
+        Args:
+            state (RagState): The current state containing embedding.
+        Returns:
+            RagState: Updated state with retrieved context.
+        """
+
         emb = state.get("embedding")
         results = self.tools[1].invoke({
             "embedding": emb,
@@ -42,7 +65,13 @@ class RagAgent:
         return {**state, "context": context_text, "retrieved_docs": results}
 
     def _answer_step(self, state: RagState) -> RagState:
-        """Generate final answer using retrieved context."""
+        """
+        Generate final answer using retrieved context.
+        Args:
+            state (RagState): The current state containing user input and context.
+        Returns:
+            RagState: Updated state with generated answer.
+        """
         prompt = ragging_prompt(
             state["user_input"],
             state.get("context", "No context")
@@ -52,7 +81,11 @@ class RagAgent:
         return {**state, "result": {"content": response.content}}
 
     def _build_graph(self):
-        """Build and compile the RAG state graph."""
+        """
+        Build and compile the RAG state graph.
+        Returns:
+            StateGraph: The constructed state graph.
+        """
         g = StateGraph(RagState)
         g.add_node("embedding", self._embedding_step)
         g.add_node("similarity", self._similarity_step)
@@ -64,10 +97,11 @@ class RagAgent:
         return g.compile()
 
     def invoke(self, state: RagState):
-        """Run the state machine for the given RAG state."""
+        """
+        Run the state machine for the given RAG state.
+        Args:
+            state (RagState): The initial state for the RAG agent.
+        Returns:
+            RagState: The final state after processing.
+        """
         return self.graph.invoke(state)
-
-
-def create_ragging_agent(bank_name: str):
-    """Factory to create a RagAgent."""
-    return RagAgent(bank_name)
